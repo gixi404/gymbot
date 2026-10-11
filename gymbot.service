@@ -1,0 +1,33 @@
+[Unit]
+Description=GymBot - Servicio de Fondo y Bot Móvil de Consultas de Entrenamiento
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Reemplaza 'gixi' con tu usuario local si ejecutas en otro sistema
+User=gixi
+WorkingDirectory=/home/gixi/dev/gymbot
+
+# Ejecutable del entorno virtual
+ExecStart=/home/gixi/dev/gymbot/.venv/bin/python /home/gixi/dev/gymbot/service.py
+
+# Políticas de reinicio ante desconexiones o fallos
+Restart=on-failure
+RestartSec=10
+
+# Python carga automáticamente el archivo .env desde WorkingDirectory
+Environment=PYTHONUNBUFFERED=1
+
+# Seguridad y permisos
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/home/gixi/dev/gymbot
+
+# Logs enviados a systemd journal (consultar con `journalctl -u gymbot.service -f`)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
