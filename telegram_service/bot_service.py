@@ -581,7 +581,8 @@ class GymTelegramBot:
                     now = time.monotonic()
                     if now - last_edit_time >= edit_interval and len(full_text) > 10:
                         try:
-                            await placeholder.edit_text(full_text + " ▌")
+                            preview = full_text if len(full_text) < 3900 else (full_text[:3900] + "...")
+                            await placeholder.edit_text(preview + " ▌")
                             last_edit_time = now
                         except Exception:
                             pass

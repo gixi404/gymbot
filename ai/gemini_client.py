@@ -211,6 +211,7 @@ class GeminiClient:
                 candidate_models.append(fallback)
 
         last_error = None
+        yielded_any = False
         for current_model in candidate_models:
             try:
                 response_stream = await self.client.aio.models.generate_content_stream(
@@ -220,10 +221,14 @@ class GeminiClient:
                 )
                 async for chunk in response_stream:
                     if chunk.text:
+                        yielded_any = True
                         yield chunk.text
                 return
             except APIError as e:
                 last_error = e
+                if yielded_any:
+                    logger.error("Error de API intermedio tras emitir tokens con '%s': %s", current_model, e)
+                    return
                 status_code = getattr(e, "code", None)
                 err_str = str(e)
                 if status_code == 404 or "NOT_FOUND" in err_str:
@@ -234,11 +239,15 @@ class GeminiClient:
                 raise
             except Exception as e:
                 last_error = e
+                if yielded_any:
+                    logger.error("Fallo de conexión intermedio tras emitir tokens con '%s': %s", current_model, e)
+                    return
                 logger.warning("Fallo en streaming con '%s': %s. Probando fallback...", current_model, e)
                 continue
 
-        # Fallback síncrono si streaming fallara por completo
-        logger.warning("Streaming no disponible. Recurriendo a generación síncrona estándar: %s", last_error)
-        fallback_text = self.generate_response(prompt, system_instruction, attachments, temperature)
-        yield fallback_text
+        # Fallback síncrono si streaming fallara por completo sin haber emitido nada
+        if not yielded_any:
+            logger.warning("Streaming no disponible. Recurriendo a generación síncrona estándar: %s", last_error)
+            fallback_text = self.generate_response(prompt, system_instruction, attachments, temperature)
+            yield fallback_text
 
