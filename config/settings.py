@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     TELEGRAM_API_ID: int
     TELEGRAM_API_HASH: str
     TELEGRAM_SESSION_NAME: str = "gymbot_user"
+    TELEGRAM_STRING_SESSION: str = ""
     TELEGRAM_WORKOUT_CHAT_ID: Union[int, str, list[Union[int, str]]]
 
     # 2. Credenciales Bot Secundario (Telegram Bot API - Consultas móviles)

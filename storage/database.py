@@ -80,6 +80,33 @@ class GymDatabase:
                 );
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    session_id INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_conv_user_session
+                ON conversation_messages (user_id, session_id, id ASC);
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_session_state (
+                    user_id TEXT PRIMARY KEY,
+                    current_session_id INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
         logger.debug("Base de datos SQLite inicializada en: %s", self.db_path)
 
     def upsert_messages(self, messages: List[RawMessage]) -> int:
@@ -300,3 +327,76 @@ class GymDatabase:
                     )
                 )
         return results
+
+    def get_current_session_id(self, user_id: str) -> int:
+        """Obtiene el identificador de sesión de memoria activa para el usuario."""
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT current_session_id FROM user_session_state WHERE user_id = ?;",
+                (str(user_id),),
+            )
+            row = cursor.fetchone()
+            if row:
+                return int(row["current_session_id"])
+            conn.execute(
+                "INSERT INTO user_session_state (user_id, current_session_id) VALUES (?, 1);",
+                (str(user_id),),
+            )
+            return 1
+
+    def add_conversation_message(self, user_id: str, role: str, content: str) -> None:
+        """Registra un mensaje en el historial persistente asociado a la sesión de memoria activa."""
+        session_id = self.get_current_session_id(user_id)
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO conversation_messages (user_id, role, content, session_id, created_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP);
+                """,
+                (str(user_id), role, content, session_id),
+            )
+
+    def get_active_memory(self, user_id: str, limit: int = 10) -> List[dict]:
+        """Obtiene los últimos mensajes de la sesión activa para proveer contexto de memoria al modelo."""
+        session_id = self.get_current_session_id(user_id)
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT role, content, created_at
+                FROM conversation_messages
+                WHERE user_id = ? AND session_id = ?
+                ORDER BY id DESC
+                LIMIT ?;
+                """,
+                (str(user_id), session_id, limit),
+            )
+            rows = cursor.fetchall()
+            return [{"role": r["role"], "text": r["content"]} for r in reversed(rows)]
+
+    def reset_active_memory(self, user_id: str) -> int:
+        """Reinicia la memoria activa incrementando el session_id.
+
+        IMPORTANTE: NO borra los mensajes anteriores de la base de datos;
+        el historial completo de conversaciones permanece intacto para consulta.
+        Retorna el nuevo session_id.
+        """
+        current_id = self.get_current_session_id(user_id)
+        new_id = current_id + 1
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_session_state (user_id, current_session_id, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    current_session_id = excluded.current_session_id,
+                    updated_at = excluded.updated_at;
+                """,
+                (str(user_id), new_id),
+            )
+        logger.info(
+            "Memoria de sesión reiniciada para usuario '%s': sesión %d -> %d",
+            user_id,
+            current_id,
+            new_id,
+        )
+        return new_id

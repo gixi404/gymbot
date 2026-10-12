@@ -87,8 +87,12 @@ class GymAnalyzer:
                 logger.warning("No se pudo leer custom_instructions.txt: %s", e)
         return base_instruction
 
-    def analyze_query(self, user_question: str) -> str:
-        """Combina el historial local de entrenamientos con la pregunta y consulta a Gemini."""
+    def analyze_query(
+        self,
+        user_question: str,
+        conversation_history: Optional[List[dict]] = None,
+    ) -> str:
+        """Combina el historial local de entrenamientos y la memoria de conversación con la pregunta."""
         question_clean = user_question.strip()
         if not question_clean:
             return "Por favor ingresa una consulta válida sobre tus entrenamientos."
@@ -110,6 +114,19 @@ class GymAnalyzer:
             f"al {stats.last_message_date.strftime('%d/%m/%Y') if stats.last_message_date else 'N/A'}."
         )
 
+        conversation_context = ""
+        if conversation_history:
+            history_lines = []
+            for msg in conversation_history:
+                role_label = "Atleta" if msg.get("role") == "user" else "Entrenador"
+                history_lines.append(f"{role_label}: {msg.get('text', '')}")
+            conversation_context = (
+                "\nMEMORIA DE LA CONVERSACIÓN PREVIA (EN ESTA SESIÓN ACTIVA):\n"
+                "-----------------------------------------------------\n"
+                + "\n".join(history_lines)
+                + "\n-----------------------------------------------------\n"
+            )
+
         prompt = f"""
 METADATOS DEL ATLETA:
 {stats_summary}
@@ -118,11 +135,11 @@ HISTORIAL CRONOLÓGICO DE SESIONES DE ENTRENAMIENTO:
 =====================================================
 {context_text}
 =====================================================
-
+{conversation_context}
 CONSULTA DEL ATLETA:
 {question_clean}
 
-INSTRUCCIÓN: Responde directamente y con precisión quirúrgica a la consulta del atleta, cumpliendo rigurosamente todas sus directivas. No agregues tablas ni desgloses del historial a menos que la consulta lo pida explícitamente.
+INSTRUCCIÓN: Responde directamente y con precisión quirúrgica a la consulta del atleta, cumpliendo rigurosamente todas sus directivas. Si la consulta hace referencia a preguntas o respuestas anteriores de la memoria conversacional previa (ej. "¿Cuál de esos 3...?"), utilízala para responder de forma coherente y continua. No agregues tablas ni desgloses del historial a menos que la consulta lo pida explícitamente.
 """
 
         try:

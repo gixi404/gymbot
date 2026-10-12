@@ -138,8 +138,9 @@ class GymTelegramBot:
             f"• Registros sincronizados: `{stats.total_messages}`\n"
             f"• Última sincronización: `{stats.last_sync_at.strftime('%d/%m/%Y %H:%M') if stats.last_sync_at else 'Nunca'}`\n\n"
             "🚀 *Comandos Disponibles:*\n"
-            "• `/sync` - Sincroniza los últimos entrenamientos desde tu chat privado.\n"
+            "• `/sync` - Sincroniza los últimos entrenamientos desde tus chats.\n"
             "• `/stats` - Muestra estadísticas de la base de datos local.\n"
+            "• `/clear` - Reinicia la memoria activa de la conversación.\n"
             "• `/help` - Ayuda y ejemplos de consultas.\n\n"
             "💬 O simplemente *escríbeme cualquier pregunta* sobre tus cargas, series, 1RM o progresiones."
         )
@@ -158,8 +159,10 @@ class GymTelegramBot:
             "• _Calcula mi 1RM estimado en peso muerto según mis últimos registros._\n"
             "• _¿En qué ejercicios tengo notas de molestias articulares o fatiga?_\n"
             "• _¿Cómo ha sido mi progresión en dominadas las últimas 4 semanas?_\n\n"
-            "⚙️ *Sincronización:*\n"
-            "Usa `/sync` cada vez que anotes un nuevo entrenamiento en tu chat privado para tener los datos al día."
+            "⚙️ *Comandos útiles:*\n"
+            "• `/sync` - Sincroniza inmediatamente nuevos entrenamientos anotados.\n"
+            "• `/clear` - Reinicia la memoria conversacional activa para iniciar una nueva charla.\n"
+            "• `/stats` - Consulta el volumen de registros guardados y fechas."
         )
         await self._safe_reply(update.message, help_text)
 
@@ -197,6 +200,20 @@ class GymTelegramBot:
             logger.error("Error durante sincronización en el bot: %s", e)
             await status_msg.edit_text(f"❌ Error al sincronizar: {str(e)}")
 
+    async def _handle_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /clear o /reset: limpia la memoria activa sin borrar el historial permanente."""
+        if not self._is_authorized(update):
+            return
+
+        user_id = str(update.effective_user.id)
+        self.database.reset_active_memory(user_id)
+        reply = (
+            "🧹 *Memoria de conversación reiniciada.*\n\n"
+            "La memoria activa se ha limpiado para comenzar una nueva charla desde cero. "
+            "El registro histórico completo de tus conversaciones y entrenamientos sigue intacto."
+        )
+        await self._safe_reply(update.message, reply)
+
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Procesa preguntas ordinarias de texto enviándolas a Gemini."""
         if not self._is_authorized(update):
@@ -215,15 +232,23 @@ class GymTelegramBot:
         except Exception as e:
             logger.debug("Sincronización incremental previa omitida: %s", e)
 
+        user_id = str(update.effective_user.id)
+        active_memory = self.database.get_active_memory(user_id, limit=8)
+
         # Ejecutamos el análisis con Gemini en un hilo asíncrono seguro
         loop = asyncio.get_running_loop()
         try:
             response_text = await loop.run_in_executor(
-                None, self.analyzer.analyze_query, user_text
+                None,
+                lambda: self.analyzer.analyze_query(user_text, conversation_history=active_memory),
             )
         except Exception as e:
             logger.error("Error analizando consulta: %s", e)
             response_text = f"❌ Ocurrió un error al procesar tu consulta: {str(e)}"
+
+        # Guardamos en el historial persistente de la sesión
+        self.database.add_conversation_message(user_id, "user", user_text)
+        self.database.add_conversation_message(user_id, "model", response_text)
 
         # Dividimos el mensaje si supera el límite de Telegram
         chunks = _split_long_message(response_text)
@@ -279,15 +304,23 @@ class GymTelegramBot:
         except Exception as e:
             logger.debug("Sincronización incremental previa omitida: %s", e)
 
+        user_id = str(update.effective_user.id)
+        active_memory = self.database.get_active_memory(user_id, limit=8)
+
         # Analizamos la consulta transcrita
         await message.chat.send_action(action=ChatAction.TYPING)
         try:
             response_text = await loop.run_in_executor(
-                None, self.analyzer.analyze_query, transcription
+                None,
+                lambda: self.analyzer.analyze_query(transcription, conversation_history=active_memory),
             )
         except Exception as e:
             logger.error("Error analizando consulta transcrita: %s", e)
             response_text = f"❌ Ocurrió un error al procesar tu consulta: {str(e)}"
+
+        # Guardamos en el historial persistente de la sesión
+        self.database.add_conversation_message(user_id, "user", transcription)
+        self.database.add_conversation_message(user_id, "model", response_text)
 
         chunks = _split_long_message(response_text)
         for chunk in chunks:
@@ -315,6 +348,8 @@ class GymTelegramBot:
         app.add_handler(CommandHandler("help", self._handle_help))
         app.add_handler(CommandHandler("stats", self._handle_stats))
         app.add_handler(CommandHandler("sync", self._handle_sync))
+        app.add_handler(CommandHandler("clear", self._handle_clear))
+        app.add_handler(CommandHandler("reset", self._handle_clear))
         app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._handle_voice_or_audio))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
 

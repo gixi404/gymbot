@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import AsyncGenerator, List, Optional, Tuple, Union
 
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import (
     FloodWaitError,
     RPCError,
@@ -59,7 +60,12 @@ class TelegramWorkoutReader:
 
         Incluye reintentos breves por si otro proceso local está liberando el archivo de sesión.
         """
-        client = TelegramClient(self._resolved_session_path, self.api_id, self.api_hash)
+        session_arg = (
+            StringSession(self.settings.TELEGRAM_STRING_SESSION)
+            if self.settings.TELEGRAM_STRING_SESSION
+            else self._resolved_session_path
+        )
+        client = TelegramClient(session_arg, self.api_id, self.api_hash)
 
         connected = False
         last_error = None

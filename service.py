@@ -5,6 +5,7 @@ Ejecuta el bot secundario de Telegram para consultas móviles y la sincronizaci�
 """
 
 import asyncio
+import logging
 import shutil
 import signal
 import sys
@@ -25,13 +26,48 @@ logging.basicConfig(
 logger = logging.getLogger("gymbot.service")
 
 
+def _is_valid_telethon_session(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(path))
+        cursor = conn.cursor()
+        cursor.execute("SELECT auth_key FROM sessions WHERE auth_key IS NOT NULL")
+        row = cursor.fetchone()
+        conn.close()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def _has_stored_messages(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(path))
+        cursor = conn.cursor()
+        cursor.execute("SELECT count(*) FROM raw_messages")
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count > 0
+    except Exception:
+        return False
+
+
 def _seed_persistent_volume_if_needed(settings: Settings) -> None:
-    """Si el volumen persistente (ej. en Railway o Docker) está vacío, inicializa con la sesión y BD base."""
+    """Si el volumen persistente (ej. en Railway o Docker) está vacío o corrupto, inicializa con la sesión y BD base."""
+    root_dir = Path(__file__).resolve().parent
+
     # 1. Base de datos
     db_target = Path(settings.DATABASE_PATH)
-    if not db_target.exists():
-        local_db = Path(__file__).resolve().parent / "gymbot.db"
-        if local_db.exists() and local_db.resolve() != db_target.resolve():
+    local_db = root_dir / "seed_db.db"
+    if not local_db.exists():
+        local_db = root_dir / "gymbot.db"
+
+    if local_db.exists() and local_db.resolve() != db_target.resolve():
+        if not _has_stored_messages(db_target):
             db_target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(local_db, db_target)
             logger.info("Base de datos inicial copiada al volumen persistente: %s", db_target)
@@ -40,13 +76,17 @@ def _seed_persistent_volume_if_needed(settings: Settings) -> None:
     session_file_name = f"{settings.TELEGRAM_SESSION_NAME}.session"
     session_target = Path(session_file_name)
     if not session_target.is_absolute():
-        session_target = Path(__file__).resolve().parent / session_file_name
-    if not session_target.exists():
-        local_session = Path(__file__).resolve().parent / "gymbot_user.session"
-        if local_session.exists() and local_session.resolve() != session_target.resolve():
+        session_target = root_dir / session_file_name
+
+    local_session = root_dir / "seed_session.dat"
+    if not local_session.exists():
+        local_session = root_dir / "gymbot_user.session"
+
+    if local_session.exists() and local_session.resolve() != session_target.resolve():
+        if not _is_valid_telethon_session(session_target) and _is_valid_telethon_session(local_session):
             session_target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(local_session, session_target)
-            logger.info("Sesión MTProto copiada al volumen persistente: %s", session_target)
+            logger.info("Sesión MTProto autenticada copiada al volumen persistente: %s", session_target)
 
 
 async def periodic_sync_task(reader: TelegramWorkoutReader, interval_minutes: int) -> None:

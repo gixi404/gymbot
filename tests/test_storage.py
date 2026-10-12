@@ -109,6 +109,55 @@ class TestGymDatabase(unittest.TestCase):
         ids = {r.id for r in results}
         self.assertEqual(ids, {1, 3})
 
+    def test_conversation_memory_and_clear_preserves_history(self):
+        user_id = "test_user_123"
+
+        # Sesión inicial debe ser 1
+        self.assertEqual(self.db.get_current_session_id(user_id), 1)
+
+        # Agregar mensajes en sesión 1
+        self.db.add_conversation_message(user_id, "user", "¿Cuáles fueron mis pesos en sentadilla?")
+        self.db.add_conversation_message(user_id, "assistant", "Hiciste 100kg x 5 y 105kg x 3.")
+
+        # Memoria activa debe tener 2 mensajes
+        active = self.db.get_active_memory(user_id)
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active[0]["text"], "¿Cuáles fueron mis pesos en sentadilla?")
+        self.assertEqual(active[1]["text"], "Hiciste 100kg x 5 y 105kg x 3.")
+
+        # Ejecutar /clear (reset_active_memory)
+        new_session = self.db.reset_active_memory(user_id)
+        self.assertEqual(new_session, 2)
+        self.assertEqual(self.db.get_current_session_id(user_id), 2)
+
+        # La memoria activa ahora debe estar VACÍA para la IA
+        active_after_clear = self.db.get_active_memory(user_id)
+        self.assertEqual(len(active_after_clear), 0)
+
+        # PERO en la base de datos TODOS los mensajes siguen existiendo (historial no borrado)
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT COUNT(*) as count FROM conversation_messages WHERE user_id = ?;",
+                (user_id,),
+            )
+            total_historical_messages = cursor.fetchone()["count"]
+            self.assertEqual(total_historical_messages, 2)
+
+        # Enviar nuevo mensaje en la nueva sesión
+        self.db.add_conversation_message(user_id, "user", "Hola, empezamos de nuevo.")
+        active_session_2 = self.db.get_active_memory(user_id)
+        self.assertEqual(len(active_session_2), 1)
+        self.assertEqual(active_session_2[0]["text"], "Hola, empezamos de nuevo.")
+
+        # Historial total en BD ahora es 3
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT COUNT(*) as count FROM conversation_messages WHERE user_id = ?;",
+                (user_id,),
+            )
+            self.assertEqual(cursor.fetchone()["count"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
+

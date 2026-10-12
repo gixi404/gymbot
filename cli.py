@@ -104,6 +104,7 @@ def process_query(
     analyzer: GymAnalyzer,
     query: str,
     reader: Optional[TelegramWorkoutReader] = None,
+    database: Optional[GymDatabase] = None,
 ) -> None:
     """Envía la pregunta al analizador de IA y presenta la respuesta formateada."""
     with console.status("Pensando...", spinner="dots"):
@@ -114,7 +115,11 @@ def process_query(
                 pass
 
         try:
-            response = analyzer.analyze_query(query)
+            active_memory = database.get_active_memory("cli_user", limit=8) if database else None
+            response = analyzer.analyze_query(query, conversation_history=active_memory)
+            if database:
+                database.add_conversation_message("cli_user", "user", query)
+                database.add_conversation_message("cli_user", "model", response)
         except Exception as e:
             console.print(f"[bold red]Error analizando consulta:[/bold red] {e}")
             return
@@ -147,12 +152,14 @@ async def interactive_mode(database: GymDatabase, reader: TelegramWorkoutReader,
         elif cmd in (":stats", "stats"):
             display_stats(database)
         elif cmd in (":clear", "clear"):
+            database.reset_active_memory("cli_user")
             console.clear()
             display_welcome_banner(database)
+            console.print("[dim green]✔ Memoria de conversación reiniciada (historial preservado).[/dim green]\n")
         elif cmd in (":help", "help"):
             display_help()
         else:
-            process_query(analyzer, user_input, reader)
+            process_query(analyzer, user_input, reader, database)
 
 
 def main() -> None:
@@ -206,7 +213,7 @@ def main() -> None:
         elif query_text.lower() in (":help", "help"):
             display_help()
         else:
-            process_query(analyzer, query_text, reader)
+            process_query(analyzer, query_text, reader, database)
         return
 
     # Modo interactivo si no se pasaron argumentos
