@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import List, Optional, Tuple
+from typing import AsyncGenerator, List, Optional, Tuple
 
 from google import genai
 from google.genai import types
@@ -180,3 +180,65 @@ class GeminiClient:
                     raise
 
         raise RuntimeError(f"Fallo al transcribir audio con modelos {candidate_models}: {last_error}")
+
+    async def generate_response_stream_async(
+        self,
+        prompt: str,
+        system_instruction: str,
+        attachments: Optional[List[Tuple[bytes, str]]] = None,
+        temperature: float = 0.2,
+    ) -> AsyncGenerator[str, None]:
+        """Genera respuesta en modo streaming asíncrono en tiempo real con fallback automático."""
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=temperature,
+        )
+
+        contents_payload = []
+        if attachments:
+            for file_bytes, mime_type in attachments:
+                clean_mime = (mime_type or "application/octet-stream").split(";")[0].strip().lower()
+                part = types.Part.from_bytes(data=file_bytes, mime_type=clean_mime)
+                contents_payload.append(part)
+            contents_payload.append(prompt)
+            request_contents = contents_payload
+        else:
+            request_contents = prompt
+
+        candidate_models = [self.model_name]
+        for fallback in ("gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"):
+            if fallback not in candidate_models:
+                candidate_models.append(fallback)
+
+        last_error = None
+        for current_model in candidate_models:
+            try:
+                response_stream = await self.client.aio.models.generate_content_stream(
+                    model=current_model,
+                    contents=request_contents,
+                    config=config,
+                )
+                async for chunk in response_stream:
+                    if chunk.text:
+                        yield chunk.text
+                return
+            except APIError as e:
+                last_error = e
+                status_code = getattr(e, "code", None)
+                err_str = str(e)
+                if status_code == 404 or "NOT_FOUND" in err_str:
+                    continue
+                if status_code in (429, 503) or "RESOURCE_EXHAUSTED" in err_str or "UNAVAILABLE" in err_str:
+                    logger.warning("Modelo '%s' en streaming saturado. Probando fallback...", current_model)
+                    continue
+                raise
+            except Exception as e:
+                last_error = e
+                logger.warning("Fallo en streaming con '%s': %s. Probando fallback...", current_model, e)
+                continue
+
+        # Fallback síncrono si streaming fallara por completo
+        logger.warning("Streaming no disponible. Recurriendo a generación síncrona estándar: %s", last_error)
+        fallback_text = self.generate_response(prompt, system_instruction, attachments, temperature)
+        yield fallback_text
+

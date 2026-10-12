@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import AsyncGenerator, List, Optional, Tuple
 
 from config.settings import Settings, get_settings
 from storage.database import GymDatabase
@@ -36,6 +36,9 @@ class GymAnalyzer:
         self.settings = settings or get_settings()
         self.database = database or GymDatabase(self.settings.DATABASE_PATH)
         self.gemini_client = gemini_client or GeminiClient(self.settings)
+        self._cached_context: Optional[str] = None
+        self._cached_total_messages: int = -1
+        self._cached_last_sync: Optional[datetime] = None
 
     def build_workout_context(
         self,
@@ -43,7 +46,26 @@ class GymAnalyzer:
         until: Optional[datetime] = None,
         limit: Optional[int] = None,
     ) -> str:
-        """Extrae y formatea el historial de entrenamientos en orden cronológico."""
+        """Extrae y formatea el historial de entrenamientos en orden cronológico (con caché en RAM)."""
+        # Si es la consulta general completa, usamos caché en memoria RAM para máxima velocidad
+        if since is None and until is None and limit is None:
+            stats = self.database.get_stats()
+            if (
+                self._cached_context is not None
+                and self._cached_total_messages == stats.total_messages
+                and self._cached_last_sync == stats.last_sync_at
+            ):
+                return self._cached_context
+
+            messages: List[RawMessage] = self.database.get_messages(reverse=False)
+            if not messages:
+                self._cached_context = "NO HAY REGISTROS DISPONIBLES EN LA BASE DE DATOS LOCAL."
+            else:
+                self._cached_context = "\n".join(msg.to_summary_line() for msg in messages)
+            self._cached_total_messages = stats.total_messages
+            self._cached_last_sync = stats.last_sync_at
+            return self._cached_context
+
         messages: List[RawMessage] = self.database.get_messages(
             since=since,
             until=until,
@@ -145,6 +167,73 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         except Exception as e:
             logger.error("Error al procesar consulta con Gemini: %s", e)
             return f"❌ Error al consultar el motor de IA (Gemini): {e}"
+
+    async def analyze_query_stream_async(
+        self,
+        user_question: str,
+        conversation_history: Optional[List[dict]] = None,
+        attachments: Optional[List[Tuple[bytes, str]]] = None,
+    ) -> AsyncGenerator[str, None]:
+        """Versión en streaming asíncrono de alta velocidad para respuesta inmediata en Telegram."""
+        question_clean = user_question.strip()
+        if not question_clean:
+            yield "Por favor ingresa una consulta válida sobre tus entrenamientos."
+            return
+
+        stats = self.database.get_stats()
+        if stats.total_messages == 0 and not attachments:
+            yield (
+                "⚠️ La base de datos local está vacía. "
+                "Ejecuta primero una sincronización (`:sync` en la CLI o `/sync` en el bot de Telegram) "
+                "para descargar tus entrenamientos desde el chat."
+            )
+            return
+
+        if stats.total_messages > 0:
+            context_text = self.build_workout_context()
+            stats_summary = (
+                f"Total de registros analizados: {stats.total_messages}. "
+                f"Período: {stats.first_message_date.strftime('%d/%m/%Y') if stats.first_message_date else 'N/A'} "
+                f"al {stats.last_message_date.strftime('%d/%m/%Y') if stats.last_message_date else 'N/A'}."
+            )
+        else:
+            context_text = "Sin registros históricos previos en base de datos."
+            stats_summary = "Base de datos local sin registros. Análisis centrado en el material adjunto."
+
+        conversation_context = ""
+        if conversation_history:
+            history_lines = []
+            for msg in conversation_history:
+                role_label = "Atleta" if msg.get("role") == "user" else "Entrenador"
+                history_lines.append(f"{role_label}: {msg.get('text', '')}")
+            conversation_context = (
+                "\nMEMORIA DE LA CONVERSACIÓN PREVIA (EN ESTA SESIÓN ACTIVA):\n"
+                "-----------------------------------------------------\n"
+                + "\n".join(history_lines)
+                + "\n-----------------------------------------------------\n"
+            )
+
+        prompt = f"""
+METADATOS DEL ATLETA:
+{stats_summary}
+
+HISTORIAL CRONOLÓGICO DE SESIONES DE ENTRENAMIENTO:
+=====================================================
+{context_text}
+=====================================================
+{conversation_context}
+CONSULTA DEL ATLETA:
+{question_clean}
+
+INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y perfil. Si hay adjuntos o memoria conversacional previa, intégralos con coherencia directa.
+"""
+
+        async for chunk in self.gemini_client.generate_response_stream_async(
+            prompt=prompt,
+            system_instruction=self.get_system_instruction(),
+            attachments=attachments,
+        ):
+            yield chunk
 
     def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
         """Transcribe un archivo o nota de voz de audio a texto utilizando Gemini."""

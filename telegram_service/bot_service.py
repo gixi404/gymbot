@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 import mimetypes
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
@@ -226,6 +227,13 @@ class GymTelegramBot:
             await message.reply_document(document=document, filename=filename, caption=caption, parse_mode=parse_mode)
         except Exception:
             await message.reply_document(document=document, filename=filename, caption=caption)
+
+    async def _background_sync_safe(self) -> None:
+        """Sincroniza en segundo plano sin bloquear ni añadir latencia a las consultas."""
+        try:
+            await self.reader.sync_channel(min_interval_seconds=30.0)
+        except Exception as e:
+            logger.debug("Sincronización en segundo plano omitida o diferida: %s", e)
 
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /start."""
@@ -553,38 +561,57 @@ class GymTelegramBot:
             return
 
         async with _send_typing_action(update.message.chat):
-            # Sincronización incremental previa en tiempo real para capturar notas recién enviadas
-            try:
-                await self.reader.sync_channel()
-            except Exception as e:
-                logger.debug("Sincronización incremental previa omitida: %s", e)
+            # Sincronización desacoplada en segundo plano (0 ms de latencia para el usuario)
+            asyncio.create_task(self._background_sync_safe())
 
             user_id = str(update.effective_user.id)
             active_memory = self.database.get_active_memory(user_id, limit=8)
 
-            # Ejecutamos el análisis con Gemini en un hilo asíncrono seguro
-            loop = asyncio.get_running_loop()
+            placeholder = await update.message.reply_text("✍️ ...")
+            full_text = ""
+            last_edit_time = time.monotonic()
+            edit_interval = 0.8  # Respetar rate limits de Telegram (~1 edit por segundo)
+
             try:
-                response_text = await loop.run_in_executor(
-                    None,
-                    lambda: self.analyzer.analyze_query(user_text, conversation_history=active_memory),
-                )
+                async for chunk in self.analyzer.analyze_query_stream_async(
+                    user_text,
+                    conversation_history=active_memory,
+                ):
+                    full_text += chunk
+                    now = time.monotonic()
+                    if now - last_edit_time >= edit_interval and len(full_text) > 10:
+                        try:
+                            await placeholder.edit_text(full_text + " ▌")
+                            last_edit_time = now
+                        except Exception:
+                            pass
+
+                final_text = full_text.strip() or "No se obtuvo respuesta del modelo."
+
+                # Guardamos en la sesión activa
+                self.database.add_conversation_message(user_id, "user", user_text)
+                self.database.add_conversation_message(user_id, "model", final_text)
+
+                # Si excede el tamaño máximo de mensaje, editamos el primero y enviamos los restantes
+                chunks = _split_long_message(final_text)
+                await self._safe_edit(placeholder, chunks[0])
+                for extra_chunk in chunks[1:]:
+                    await self._safe_reply(update.message, extra_chunk)
+
             except Exception as e:
-                logger.error("Error analizando consulta: %s", e)
-                response_text = f"❌ Ocurrió un error al procesar tu consulta: {str(e)}"
-
-            # Guardamos en el historial persistente de la sesión
-            self.database.add_conversation_message(user_id, "user", user_text)
-            self.database.add_conversation_message(user_id, "model", response_text)
-
-            # Dividimos el mensaje si supera el límite de Telegram
-            chunks = _split_long_message(response_text)
-            for chunk in chunks:
+                logger.error("Error en streaming con Gemini: %s", e)
+                # Fallback seguro con ejecución síncrona
+                loop = asyncio.get_running_loop()
                 try:
-                    await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    # Fallback sin markdown si Telegram rechaza sintaxis de formato
-                    await update.message.reply_text(chunk)
+                    fallback_resp = await loop.run_in_executor(
+                        None,
+                        lambda: self.analyzer.analyze_query(user_text, conversation_history=active_memory),
+                    )
+                except Exception as ex:
+                    fallback_resp = f"❌ Ocurrió un error al procesar tu consulta: {ex}"
+                self.database.add_conversation_message(user_id, "user", user_text)
+                self.database.add_conversation_message(user_id, "model", fallback_resp)
+                await self._safe_edit(placeholder, fallback_resp)
 
     async def _handle_voice_or_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Procesa mensajes de voz o archivos de audio transcribiéndolos y respondiendo."""
@@ -627,11 +654,8 @@ class GymTelegramBot:
                 await message.reply_text("⚠️ No se detectó ninguna voz comprensible en el mensaje de audio.")
                 return
 
-            # Sincronización incremental previa en tiempo real
-            try:
-                await self.reader.sync_channel()
-            except Exception as e:
-                logger.debug("Sincronización incremental previa omitida: %s", e)
+            # Sincronización desacoplada en segundo plano (0 ms de latencia)
+            asyncio.create_task(self._background_sync_safe())
 
             user_id = str(update.effective_user.id)
             active_memory = self.database.get_active_memory(user_id, limit=8)
@@ -667,10 +691,8 @@ class GymTelegramBot:
             return
 
         async with _send_typing_action(message.chat):
-            try:
-                await self.reader.sync_channel()
-            except Exception as e:
-                logger.debug("Sincronización incremental previa omitida: %s", e)
+            # Sincronización desacoplada en segundo plano (0 ms de latencia)
+            asyncio.create_task(self._background_sync_safe())
 
             # La foto con el índice -1 contiene la mayor resolución
             photo_obj = message.photo[-1]
@@ -730,10 +752,8 @@ class GymTelegramBot:
             return
 
         async with _send_typing_action(message.chat):
-            try:
-                await self.reader.sync_channel()
-            except Exception as e:
-                logger.debug("Sincronización incremental previa omitida: %s", e)
+            # Sincronización desacoplada en segundo plano (0 ms de latencia)
+            asyncio.create_task(self._background_sync_safe())
 
             file_name = doc.file_name or "documento"
             mime_type = doc.mime_type
