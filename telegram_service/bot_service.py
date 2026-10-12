@@ -211,6 +211,22 @@ class GymTelegramBot:
         except Exception:
             await message.edit_text(text, reply_markup=reply_markup)
 
+    @staticmethod
+    async def _safe_reply_photo(message, photo, caption: str = "", parse_mode: str = ParseMode.MARKDOWN) -> None:
+        """Envía una foto intentando formato Markdown en el caption, con fallback a texto plano."""
+        try:
+            await message.reply_photo(photo=photo, caption=caption, parse_mode=parse_mode)
+        except Exception:
+            await message.reply_photo(photo=photo, caption=caption)
+
+    @staticmethod
+    async def _safe_reply_document(message, document, filename: str, caption: str = "", parse_mode: str = ParseMode.MARKDOWN) -> None:
+        """Envía un documento intentando formato Markdown en el caption, con fallback a texto plano."""
+        try:
+            await message.reply_document(document=document, filename=filename, caption=caption, parse_mode=parse_mode)
+        except Exception:
+            await message.reply_document(document=document, filename=filename, caption=caption)
+
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /start."""
         if not self._is_authorized(update):
@@ -276,7 +292,7 @@ class GymTelegramBot:
                     "⚠️ No hay suficientes registros de peso para generar la gráfica (se requieren al menos 2 mediciones en PesoCorporal)."
                 )
                 return
-            await message.reply_photo(photo=buf, caption="📈 *Evolución de Peso Corporal*")
+            await self._safe_reply_photo(message, photo=buf, caption="📈 *Evolución de Peso Corporal*")
         else:
             res = ChartGenerator.generate_exercise_chart(query, all_messages)
             if not res:
@@ -286,7 +302,7 @@ class GymTelegramBot:
                 )
                 return
             buf, canonical = res
-            await message.reply_photo(photo=buf, caption=f"🏋️ *Progresión de Fuerza: {canonical}*")
+            await self._safe_reply_photo(message, photo=buf, caption=f"🏋️ *Progresión de Fuerza: {canonical}*")
 
     async def _handle_macros(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /macros o /hoy."""
@@ -340,7 +356,8 @@ class GymTelegramBot:
             csv_buf = self.database.export_to_csv()
             now_str = datetime.now().strftime("%Y%m%d_%H%M")
             filename = f"gymbot_export_{now_str}.csv"
-            await update.message.reply_document(
+            await self._safe_reply_document(
+                update.message,
                 document=csv_buf,
                 filename=filename,
                 caption="💾 *Historial exportado con éxito* (Codificación UTF-8 compatible con Excel y Hojas de Cálculo).",
@@ -427,7 +444,8 @@ class GymTelegramBot:
             try:
                 csv_buf = self.database.export_to_csv()
                 now_str = datetime.now().strftime("%Y%m%d_%H%M")
-                await msg.reply_document(
+                await self._safe_reply_document(
+                    msg,
                     document=csv_buf,
                     filename=f"gymbot_export_{now_str}.csv",
                     caption="💾 *Historial exportado con éxito*.",
