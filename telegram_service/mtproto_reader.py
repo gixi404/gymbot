@@ -146,59 +146,62 @@ class TelegramWorkoutReader:
                         logger.error("No se pudo resolver la entidad del chat '%s': %s", current_chat_id, e)
                         continue
 
-                min_id = 0 if force_all else self.database.get_last_synced_id(current_chat_id)
-                logger.info(
-                    "Iniciando sincronización de '%s' (min_id=%d, force_all=%s)...",
-                    current_chat_id,
-                    min_id,
-                    force_all,
-                )
+                    chat_title = getattr(entity, "title", None) or getattr(entity, "username", None) or ""
+                    min_id = 0 if force_all else self.database.get_last_synced_id(current_chat_id)
+                    logger.info(
+                        "Iniciando sincronización de '%s' ('%s') (min_id=%d, force_all=%s)...",
+                        current_chat_id,
+                        chat_title,
+                        min_id,
+                        force_all,
+                    )
 
-                raw_messages_to_save: List[RawMessage] = []
-                max_seen_id = min_id
+                    raw_messages_to_save: List[RawMessage] = []
+                    max_seen_id = min_id
 
-                try:
-                    async for msg in client.iter_messages(
-                        entity,
-                        min_id=min_id,
-                        reverse=True,
-                    ):
-                        if not isinstance(msg, Message):
-                            continue
+                    try:
+                        async for msg in client.iter_messages(
+                            entity,
+                            min_id=min_id,
+                            reverse=True,
+                        ):
+                            if not isinstance(msg, Message):
+                                continue
 
-                        text_content = (msg.message or msg.raw_text or "").strip()
-                        if not text_content:
-                            continue
+                            text_content = (msg.message or msg.raw_text or "").strip()
+                            if not text_content:
+                                continue
 
-                        msg_date = msg.date
-                        edit_date = msg.edit_date
-                        media_type = msg.media.__class__.__name__ if msg.media else None
+                            msg_date = msg.date
+                            edit_date = msg.edit_date
+                            media_type = msg.media.__class__.__name__ if msg.media else None
 
-                        raw_msg = RawMessage(
-                            id=msg.id,
-                            chat_id=str(current_chat_id),
-                            date=msg_date,
-                            text=text_content,
-                            edit_date=edit_date,
-                            media_type=media_type,
-                            created_at=datetime.now(timezone.utc),
-                        )
-                        raw_messages_to_save.append(raw_msg)
-                        if msg.id > max_seen_id:
-                            max_seen_id = msg.id
+                            raw_msg = RawMessage(
+                                id=msg.id,
+                                chat_id=str(current_chat_id),
+                                chat_title=chat_title,
+                                date=msg_date,
+                                text=text_content,
+                                edit_date=edit_date,
+                                media_type=media_type,
+                                created_at=datetime.now(timezone.utc),
+                            )
+                            raw_messages_to_save.append(raw_msg)
+                            if msg.id > max_seen_id:
+                                max_seen_id = msg.id
 
-                except FloodWaitError as e:
-                    logger.error("Rate-limit de Telegram detectado (FloodWait: %d segundos)", e.seconds)
-                    raise RuntimeError(
-                        f"Telegram ha pausado temporalmente las consultas. Espera {e.seconds} segundos."
-                    ) from e
-                except RPCError as e:
-                    logger.error("Error MTProto al iterar mensajes de '%s': %s", current_chat_id, e)
-                    raise
+                    except FloodWaitError as e:
+                        logger.error("Rate-limit de Telegram detectado (FloodWait: %d segundos)", e.seconds)
+                        raise RuntimeError(
+                            f"Telegram ha pausado temporalmente las consultas. Espera {e.seconds} segundos."
+                        ) from e
+                    except RPCError as e:
+                        logger.error("Error MTProto al iterar mensajes de '%s': %s", current_chat_id, e)
+                        raise
 
-                synced_count = self.database.upsert_messages(raw_messages_to_save)
-                self.database.update_sync_metadata(current_chat_id, max_seen_id)
-                total_synced_now += synced_count
+                    synced_count = self.database.upsert_messages(raw_messages_to_save)
+                    self.database.update_sync_metadata(current_chat_id, max_seen_id)
+                    total_synced_now += synced_count
 
         stats = self.database.get_stats()
         self._last_sync_timestamp = time.monotonic()

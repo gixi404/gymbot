@@ -176,6 +176,29 @@ class TestGymDatabase(unittest.TestCase):
         self.assertEqual(last_id_c2, 0)
 
 
+    def test_composite_primary_key_multi_chat_coexistence(self):
+        now = datetime.now()
+        # Mismo id=100 en dos chats diferentes
+        msg_gym = RawMessage(id=100, date=now, text="Press militar 60kg", chat_id="-5000217070", chat_title="GYM")
+        msg_food = RawMessage(id=100, date=now, text="Avena 80g + Whey", chat_id="-5335679250", chat_title="Comidas")
+
+        self.db.upsert_messages([msg_gym, msg_food])
+
+        stored = self.db.get_messages()
+        self.assertEqual(len(stored), 2)
+        chats = {m.chat_id for m in stored}
+        self.assertEqual(chats, {"-5000217070", "-5335679250"})
+
+        # Comprobar formato to_summary_line
+        summary_gym = msg_gym.to_summary_line()
+        self.assertIn("[GYM]", summary_gym)
+        self.assertIn("(Msg #100)", summary_gym)
+
+        summary_food = msg_food.to_summary_line()
+        self.assertIn("[Comidas]", summary_food)
+        self.assertIn("Avena 80g", summary_food)
+
+
 if __name__ == "__main__":
     unittest.main()
 

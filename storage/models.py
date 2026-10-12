@@ -15,12 +15,14 @@ class RawMessage:
     edit_date: Optional[datetime] = None
     media_type: Optional[str] = None
     chat_id: Optional[str] = None
+    chat_title: Optional[str] = None
     created_at: Optional[datetime] = None
 
     def to_summary_line(self) -> str:
         """Formatea el mensaje para la ventana de contexto de IA con fecha y texto."""
         date_str = self.date.strftime("%Y-%m-%d %H:%M")
-        return f"[{date_str}] (Msg #{self.id}):\n{self.text.strip()}\n"
+        origin = f" [{self.chat_title}]" if self.chat_title else ""
+        return f"[{date_str}]{origin} (Msg #{self.id}):\n{self.text.strip()}\n"
 
 
 @dataclass

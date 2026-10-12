@@ -49,21 +49,59 @@ class GymDatabase:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS raw_messages (
-                    id INTEGER PRIMARY KEY,
-                    chat_id TEXT DEFAULT '',
+                    id INTEGER NOT NULL,
+                    chat_id TEXT NOT NULL DEFAULT '',
+                    chat_title TEXT DEFAULT '',
                     date TEXT NOT NULL,
                     text TEXT NOT NULL,
                     edit_date TEXT,
                     media_type TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (id, chat_id)
                 );
                 """
             )
-            # Migración automática si la tabla no tenía la columna chat_id
+            # Migración automática si la tabla fue creada con id como única clave primaria
+            # o si le faltan las columnas chat_id o chat_title
             cursor = conn.execute("PRAGMA table_info(raw_messages);")
-            col_names = [r["name"] for r in cursor.fetchall()]
-            if "chat_id" not in col_names:
-                conn.execute("ALTER TABLE raw_messages ADD COLUMN chat_id TEXT DEFAULT '';")
+            table_info = cursor.fetchall()
+            col_names = [r["name"] for r in table_info]
+            pk_cols = [r["name"] for r in table_info if r["pk"] > 0]
+
+            needs_pk_migration = "chat_id" not in pk_cols
+            if needs_pk_migration:
+                has_chat_id = "chat_id" in col_names
+                has_chat_title = "chat_title" in col_names
+                chat_id_expr = "COALESCE(chat_id, '')" if has_chat_id else "''"
+                chat_title_expr = "COALESCE(chat_title, '')" if has_chat_title else "''"
+
+                conn.execute(
+                    """
+                    CREATE TABLE raw_messages_migrated (
+                        id INTEGER NOT NULL,
+                        chat_id TEXT NOT NULL DEFAULT '',
+                        chat_title TEXT DEFAULT '',
+                        date TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        edit_date TEXT,
+                        media_type TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (id, chat_id)
+                    );
+                    """
+                )
+                conn.execute(
+                    f"""
+                    INSERT OR IGNORE INTO raw_messages_migrated (id, chat_id, chat_title, date, text, edit_date, media_type, created_at)
+                    SELECT id, {chat_id_expr}, {chat_title_expr}, date, text, edit_date, media_type, created_at
+                    FROM raw_messages;
+                    """
+                )
+                conn.execute("DROP TABLE raw_messages;")
+                conn.execute("ALTER TABLE raw_messages_migrated RENAME TO raw_messages;")
+            else:
+                if "chat_title" not in col_names:
+                    conn.execute("ALTER TABLE raw_messages ADD COLUMN chat_title TEXT DEFAULT '';")
 
             conn.execute(
                 """
@@ -111,7 +149,7 @@ class GymDatabase:
         logger.debug("Base de datos SQLite inicializada en: %s", self.db_path)
 
     def upsert_messages(self, messages: List[RawMessage]) -> int:
-        """Inserta o actualiza mensajes de forma idempotente.
+        """Inserta o actualiza mensajes de forma idempotente con soporte multi-chat.
 
         Retorna la cantidad de mensajes procesados.
         """
@@ -119,10 +157,10 @@ class GymDatabase:
             return 0
 
         query = """
-        INSERT INTO raw_messages (id, chat_id, date, text, edit_date, media_type, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-        ON CONFLICT(id) DO UPDATE SET
-            chat_id = excluded.chat_id,
+        INSERT INTO raw_messages (id, chat_id, chat_title, date, text, edit_date, media_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        ON CONFLICT(id, chat_id) DO UPDATE SET
+            chat_title = CASE WHEN excluded.chat_title != '' THEN excluded.chat_title ELSE raw_messages.chat_title END,
             date = excluded.date,
             text = excluded.text,
             edit_date = excluded.edit_date,
@@ -133,6 +171,7 @@ class GymDatabase:
             (
                 m.id,
                 m.chat_id or "",
+                m.chat_title or "",
                 m.date.isoformat(),
                 m.text,
                 m.edit_date.isoformat() if m.edit_date else None,
@@ -192,6 +231,29 @@ class GymDatabase:
             """
             conn.execute(query, (cid, last_message_id, now_iso, total_messages))
 
+    @staticmethod
+    def _row_to_raw_message(row: sqlite3.Row) -> RawMessage:
+        """Mapea una fila de base de datos a una instancia de RawMessage."""
+        col_names = row.keys()
+        return RawMessage(
+            id=row["id"],
+            date=datetime.fromisoformat(row["date"]),
+            text=row["text"],
+            edit_date=(
+                datetime.fromisoformat(row["edit_date"])
+                if row["edit_date"]
+                else None
+            ),
+            media_type=row["media_type"],
+            chat_id=row["chat_id"] if "chat_id" in col_names else None,
+            chat_title=row["chat_title"] if "chat_title" in col_names else None,
+            created_at=(
+                datetime.fromisoformat(row["created_at"])
+                if row["created_at"]
+                else None
+            ),
+        )
+
     def get_messages(
         self,
         since: Optional[datetime] = None,
@@ -218,7 +280,7 @@ class GymDatabase:
         limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
 
         query = f"""
-        SELECT id, date, text, edit_date, media_type, created_at
+        SELECT id, chat_id, chat_title, date, text, edit_date, media_type, created_at
         FROM raw_messages
         {where_clause}
         ORDER BY date {order_dir}
@@ -229,24 +291,7 @@ class GymDatabase:
         with self.get_connection() as conn:
             cursor = conn.execute(query, params)
             for row in cursor.fetchall():
-                results.append(
-                    RawMessage(
-                        id=row["id"],
-                        date=datetime.fromisoformat(row["date"]),
-                        text=row["text"],
-                        edit_date=(
-                            datetime.fromisoformat(row["edit_date"])
-                            if row["edit_date"]
-                            else None
-                        ),
-                        media_type=row["media_type"],
-                        created_at=(
-                            datetime.fromisoformat(row["created_at"])
-                            if row["created_at"]
-                            else None
-                        ),
-                    )
-                )
+                results.append(self._row_to_raw_message(row))
         return results
 
     def get_stats(self, channel_id: Optional[Union[str, int]] = None) -> DatabaseStats:
@@ -312,7 +357,7 @@ class GymDatabase:
     def search_messages(self, query_term: str, limit: int = 50) -> List[RawMessage]:
         """Búsqueda simple por palabra clave dentro del texto de entrenamientos."""
         query = """
-        SELECT id, date, text, edit_date, media_type, created_at
+        SELECT id, chat_id, chat_title, date, text, edit_date, media_type, created_at
         FROM raw_messages
         WHERE text LIKE ?
         ORDER BY date DESC
@@ -323,24 +368,7 @@ class GymDatabase:
         with self.get_connection() as conn:
             cursor = conn.execute(query, (pattern, limit))
             for row in cursor.fetchall():
-                results.append(
-                    RawMessage(
-                        id=row["id"],
-                        date=datetime.fromisoformat(row["date"]),
-                        text=row["text"],
-                        edit_date=(
-                            datetime.fromisoformat(row["edit_date"])
-                            if row["edit_date"]
-                            else None
-                        ),
-                        media_type=row["media_type"],
-                        created_at=(
-                            datetime.fromisoformat(row["created_at"])
-                            if row["created_at"]
-                            else None
-                        ),
-                    )
-                )
+                results.append(self._row_to_raw_message(row))
         return results
 
     def get_current_session_id(self, user_id: str) -> int:
