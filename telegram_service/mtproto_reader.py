@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +44,8 @@ class TelegramWorkoutReader:
         self.api_hash = self.settings.TELEGRAM_API_HASH
         self.session_name = self.settings.TELEGRAM_SESSION_NAME
         self.chat_ids: List[Union[int, str]] = self.settings.workout_chat_ids
+        self._sync_lock = asyncio.Lock()
+        self._last_sync_timestamp: float = 0.0
 
     @property
     def _resolved_session_path(self) -> str:
@@ -102,31 +105,46 @@ class TelegramWorkoutReader:
             except Exception as e:
                 logger.debug("Error cerrando cliente MTProto: %s", e)
 
-    async def sync_channel(self, force_all: bool = False) -> Tuple[int, int]:
+    async def sync_channel(
+        self,
+        force_all: bool = False,
+        min_interval_seconds: float = 15.0,
+    ) -> Tuple[int, int]:
         """Sincroniza incrementalmente los mensajes de todos los chats de entrenamientos hacia SQLite.
 
         Argumentos:
             force_all: Si es True, recupera todo el historial disponible sin considerar el último ID.
+            min_interval_seconds: Tiempo mínimo en segundos entre sincronizaciones sucesivas (debounce).
 
         Retorna:
             Tupla (mensajes_nuevos_sincronizados, total_mensajes_almacenados)
         """
-        total_synced_now = 0
+        async with self._sync_lock:
+            stats = self.database.get_stats()
+            now = time.monotonic()
+            if not force_all and self._last_sync_timestamp > 0 and (now - self._last_sync_timestamp < min_interval_seconds):
+                logger.debug(
+                    "Sincronización omitida por debounce (última hace %.1fs).",
+                    now - self._last_sync_timestamp,
+                )
+                return 0, stats.total_messages
 
-        async with self.get_client() as client:
-            for current_chat_id in self.chat_ids:
-                try:
-                    entity = await client.get_entity(current_chat_id)
-                except ValueError:
-                    logger.debug(
-                        "Entidad '%s' no encontrada en caché de sesión. Obteniendo diálogos...",
-                        current_chat_id,
-                    )
-                    await client.get_dialogs()
-                    entity = await client.get_entity(current_chat_id)
-                except Exception as e:
-                    logger.error("No se pudo resolver la entidad del chat '%s': %s", current_chat_id, e)
-                    continue
+            total_synced_now = 0
+
+            async with self.get_client() as client:
+                for current_chat_id in self.chat_ids:
+                    try:
+                        entity = await client.get_entity(current_chat_id)
+                    except ValueError:
+                        logger.debug(
+                            "Entidad '%s' no encontrada en caché de sesión. Obteniendo diálogos...",
+                            current_chat_id,
+                        )
+                        await client.get_dialogs(limit=50)
+                        entity = await client.get_entity(current_chat_id)
+                    except Exception as e:
+                        logger.error("No se pudo resolver la entidad del chat '%s': %s", current_chat_id, e)
+                        continue
 
                 min_id = 0 if force_all else self.database.get_last_synced_id(current_chat_id)
                 logger.info(
@@ -183,6 +201,7 @@ class TelegramWorkoutReader:
                 total_synced_now += synced_count
 
         stats = self.database.get_stats()
+        self._last_sync_timestamp = time.monotonic()
         logger.info(
             "Sincronización completada. Nuevos mensajes: %d. Total acumulado: %d.",
             total_synced_now,

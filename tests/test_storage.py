@@ -157,7 +157,26 @@ class TestGymDatabase(unittest.TestCase):
             )
             self.assertEqual(cursor.fetchone()["count"], 3)
 
+    def test_get_stats_with_channel_id_list(self):
+        # Registramos sincronización para dos canales distintos
+        self.db.update_sync_metadata("-1001", last_message_id=10, total_messages=5)
+        self.db.update_sync_metadata("-1002", last_message_id=20, total_messages=10)
+
+        # Consultar pasando una lista de chats (como ocurre en la configuración)
+        stats = self.db.get_stats(channel_id=["-1001", "-1002"])
+        self.assertIsNotNone(stats.last_sync_at)
+
+    def test_get_last_synced_id_fallback_chat_isolation(self):
+        # Canal 1 tiene mensaje con ID 500
+        msg_c1 = RawMessage(id=500, date=datetime.now(), text="C1", chat_id="-1001")
+        self.db.upsert_messages([msg_c1])
+
+        # Canal 2 es nuevo y no tiene metadata; su fallback debe ser 0, no 500
+        last_id_c2 = self.db.get_last_synced_id("-1002")
+        self.assertEqual(last_id_c2, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

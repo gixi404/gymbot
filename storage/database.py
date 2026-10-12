@@ -30,10 +30,10 @@ class GymDatabase:
         )
         conn.row_factory = sqlite3.Row
         try:
-            # Optimizaciones de rendimiento y concurrencia (WAL mode)
-            conn.execute("PRAGMA journal_mode = WAL;")
+            # Optimizaciones de rendimiento y concurrencia por conexión
             conn.execute("PRAGMA synchronous = NORMAL;")
             conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("PRAGMA busy_timeout = 30000;")
             yield conn
             conn.commit()
         except Exception:
@@ -45,6 +45,7 @@ class GymDatabase:
     def init_db(self) -> None:
         """Inicializa las tablas e índices si no existen."""
         with self.get_connection() as conn:
+            conn.execute("PRAGMA journal_mode = WAL;")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS raw_messages (
@@ -158,8 +159,11 @@ class GymDatabase:
             if row:
                 return int(row["last_message_id"])
 
-            # Fallback: consultar el ID máximo en raw_messages si no hay metadata previa
-            cursor = conn.execute("SELECT MAX(id) as max_id FROM raw_messages;")
+            # Fallback: consultar el ID máximo en raw_messages para este chat si no hay metadata previa
+            cursor = conn.execute(
+                "SELECT MAX(id) as max_id FROM raw_messages WHERE chat_id = ?;",
+                (cid,),
+            )
             max_row = cursor.fetchone()
             return int(max_row["max_id"]) if max_row and max_row["max_id"] else 0
 
@@ -271,7 +275,18 @@ class GymDatabase:
             )
 
             last_sync_at = None
-            if channel_id:
+            if isinstance(channel_id, (list, tuple, set)):
+                c_list = [str(cid) for cid in channel_id if str(cid).strip()]
+                if c_list:
+                    placeholders = ",".join("?" * len(c_list))
+                    c_cursor = conn.execute(
+                        f"SELECT MAX(last_sync_at) as max_sync FROM sync_metadata WHERE channel_id IN ({placeholders});",
+                        c_list,
+                    )
+                    c_row = c_cursor.fetchone()
+                    if c_row and c_row["max_sync"]:
+                        last_sync_at = datetime.fromisoformat(c_row["max_sync"])
+            elif channel_id:
                 c_cursor = conn.execute(
                     "SELECT last_sync_at FROM sync_metadata WHERE channel_id = ?;",
                     (str(channel_id),),

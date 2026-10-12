@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 import mimetypes
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from telegram import Update
@@ -27,6 +28,30 @@ logger = logging.getLogger(__name__)
 
 # Límite máximo de caracteres por mensaje en Telegram
 TELEGRAM_MESSAGE_MAX_LENGTH = 4000
+
+
+@asynccontextmanager
+async def _send_typing_action(chat, interval: float = 4.0):
+    """Mantiene activo el indicador 'escribiendo...' en Telegram mientras se procesa la solicitud."""
+    async def _keep_typing():
+        try:
+            while True:
+                await chat.send_action(action=ChatAction.TYPING)
+                await asyncio.sleep(interval)
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        except Exception:
+            pass
+
+    task = asyncio.create_task(_keep_typing())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
 
 
 def _split_long_message(text: str, max_length: int = TELEGRAM_MESSAGE_MAX_LENGTH) -> list[str]:
@@ -225,41 +250,39 @@ class GymTelegramBot:
         if not user_text:
             return
 
-        # Notificamos acción de 'escribiendo' al usuario
-        await update.message.chat.send_action(action=ChatAction.TYPING)
-
-        # Sincronización incremental previa en tiempo real para capturar notas recién enviadas
-        try:
-            await self.reader.sync_channel()
-        except Exception as e:
-            logger.debug("Sincronización incremental previa omitida: %s", e)
-
-        user_id = str(update.effective_user.id)
-        active_memory = self.database.get_active_memory(user_id, limit=8)
-
-        # Ejecutamos el análisis con Gemini en un hilo asíncrono seguro
-        loop = asyncio.get_running_loop()
-        try:
-            response_text = await loop.run_in_executor(
-                None,
-                lambda: self.analyzer.analyze_query(user_text, conversation_history=active_memory),
-            )
-        except Exception as e:
-            logger.error("Error analizando consulta: %s", e)
-            response_text = f"❌ Ocurrió un error al procesar tu consulta: {str(e)}"
-
-        # Guardamos en el historial persistente de la sesión
-        self.database.add_conversation_message(user_id, "user", user_text)
-        self.database.add_conversation_message(user_id, "model", response_text)
-
-        # Dividimos el mensaje si supera el límite de Telegram
-        chunks = _split_long_message(response_text)
-        for chunk in chunks:
+        async with _send_typing_action(update.message.chat):
+            # Sincronización incremental previa en tiempo real para capturar notas recién enviadas
             try:
-                await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-            except Exception:
-                # Fallback sin markdown si Telegram rechaza sintaxis de formato
-                await update.message.reply_text(chunk)
+                await self.reader.sync_channel()
+            except Exception as e:
+                logger.debug("Sincronización incremental previa omitida: %s", e)
+
+            user_id = str(update.effective_user.id)
+            active_memory = self.database.get_active_memory(user_id, limit=8)
+
+            # Ejecutamos el análisis con Gemini en un hilo asíncrono seguro
+            loop = asyncio.get_running_loop()
+            try:
+                response_text = await loop.run_in_executor(
+                    None,
+                    lambda: self.analyzer.analyze_query(user_text, conversation_history=active_memory),
+                )
+            except Exception as e:
+                logger.error("Error analizando consulta: %s", e)
+                response_text = f"❌ Ocurrió un error al procesar tu consulta: {str(e)}"
+
+            # Guardamos en el historial persistente de la sesión
+            self.database.add_conversation_message(user_id, "user", user_text)
+            self.database.add_conversation_message(user_id, "model", response_text)
+
+            # Dividimos el mensaje si supera el límite de Telegram
+            chunks = _split_long_message(response_text)
+            for chunk in chunks:
+                try:
+                    await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    # Fallback sin markdown si Telegram rechaza sintaxis de formato
+                    await update.message.reply_text(chunk)
 
     async def _handle_voice_or_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Procesa mensajes de voz o archivos de audio transcribiéndolos y respondiendo."""
@@ -271,65 +294,66 @@ class GymTelegramBot:
         if not voice_or_audio:
             return
 
-        # Notificamos acción de 'escribiendo' al usuario
-        await message.chat.send_action(action=ChatAction.TYPING)
-
-        try:
-            file_obj = await context.bot.get_file(voice_or_audio.file_id)
-            audio_bytearray = await file_obj.download_as_bytearray()
-            audio_bytes = bytes(audio_bytearray)
-        except Exception as e:
-            logger.error("Error al descargar archivo de audio: %s", e)
-            await message.reply_text("❌ No se pudo descargar el audio para su transcripción.")
-            return
-
-        mime_type = getattr(voice_or_audio, "mime_type", None) or ("audio/ogg" if message.voice else "audio/mpeg")
-
-        loop = asyncio.get_running_loop()
-        try:
-            transcription = await loop.run_in_executor(
-                None, self.analyzer.transcribe_audio, audio_bytes, mime_type
-            )
-        except Exception as e:
-            logger.error("Error transcribiendo audio con Gemini: %s", e)
-            await message.reply_text(f"❌ Error al transcribir el audio: {str(e)}")
-            return
-
-        transcription = (transcription or "").strip()
-        if not transcription:
-            await message.reply_text("⚠️ No se detectó ninguna voz comprensible en el mensaje de audio.")
-            return
-
-        # Sincronización incremental previa en tiempo real
-        try:
-            await self.reader.sync_channel()
-        except Exception as e:
-            logger.debug("Sincronización incremental previa omitida: %s", e)
-
-        user_id = str(update.effective_user.id)
-        active_memory = self.database.get_active_memory(user_id, limit=8)
-
-        # Analizamos la consulta transcrita
-        await message.chat.send_action(action=ChatAction.TYPING)
-        try:
-            response_text = await loop.run_in_executor(
-                None,
-                lambda: self.analyzer.analyze_query(transcription, conversation_history=active_memory),
-            )
-        except Exception as e:
-            logger.error("Error analizando consulta transcrita: %s", e)
-            response_text = f"❌ Ocurrió un error al procesar tu consulta: {str(e)}"
-
-        # Guardamos en el historial persistente de la sesión
-        self.database.add_conversation_message(user_id, "user", transcription)
-        self.database.add_conversation_message(user_id, "model", response_text)
-
-        chunks = _split_long_message(response_text)
-        for chunk in chunks:
+        async with _send_typing_action(message.chat):
             try:
-                await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-            except Exception:
-                await message.reply_text(chunk)
+                file_obj = await context.bot.get_file(voice_or_audio.file_id)
+                audio_bytearray = await file_obj.download_as_bytearray()
+                audio_bytes = bytes(audio_bytearray)
+            except Exception as e:
+                logger.error("Error al descargar archivo de audio: %s", e)
+                await message.reply_text("❌ No se pudo descargar el audio para su transcripción.")
+                return
+
+            if not audio_bytes:
+                await message.reply_text("⚠️ El archivo de audio descargado está vacío.")
+                return
+
+            mime_type = getattr(voice_or_audio, "mime_type", None) or ("audio/ogg" if message.voice else "audio/mpeg")
+
+            loop = asyncio.get_running_loop()
+            try:
+                transcription = await loop.run_in_executor(
+                    None, self.analyzer.transcribe_audio, audio_bytes, mime_type
+                )
+            except Exception as e:
+                logger.error("Error transcribiendo audio con Gemini: %s", e)
+                await message.reply_text(f"❌ Error al transcribir el audio: {str(e)}")
+                return
+
+            transcription = (transcription or "").strip()
+            if not transcription:
+                await message.reply_text("⚠️ No se detectó ninguna voz comprensible en el mensaje de audio.")
+                return
+
+            # Sincronización incremental previa en tiempo real
+            try:
+                await self.reader.sync_channel()
+            except Exception as e:
+                logger.debug("Sincronización incremental previa omitida: %s", e)
+
+            user_id = str(update.effective_user.id)
+            active_memory = self.database.get_active_memory(user_id, limit=8)
+
+            # Analizamos la consulta transcrita
+            try:
+                response_text = await loop.run_in_executor(
+                    None,
+                    lambda: self.analyzer.analyze_query(transcription, conversation_history=active_memory),
+                )
+            except Exception as e:
+                logger.error("Error analizando consulta transcrita: %s", e)
+                response_text = f"❌ Ocurrió un error al procesar tu consulta: {str(e)}"
+
+            # Guardamos en el historial persistente de la sesión
+            self.database.add_conversation_message(user_id, "user", transcription)
+            self.database.add_conversation_message(user_id, "model", response_text)
+
+            chunks = _split_long_message(response_text)
+            for chunk in chunks:
+                try:
+                    await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    await message.reply_text(chunk)
 
     async def _handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Procesa fotos enviadas por el usuario y las analiza con Gemini respetando el contexto."""
@@ -340,55 +364,54 @@ class GymTelegramBot:
         if not message.photo:
             return
 
-        await message.chat.send_action(action=ChatAction.TYPING)
-
-        try:
-            await self.reader.sync_channel()
-        except Exception as e:
-            logger.debug("Sincronización incremental previa omitida: %s", e)
-
-        # La foto con el índice -1 contiene la mayor resolución
-        photo_obj = message.photo[-1]
-        try:
-            file_obj = await context.bot.get_file(photo_obj.file_id)
-            img_bytearray = await file_obj.download_as_bytearray()
-            img_bytes = bytes(img_bytearray)
-        except Exception as e:
-            logger.error("Error al descargar foto en Telegram: %s", e)
-            await message.reply_text("❌ No se pudo descargar la imagen para su análisis.")
-            return
-
-        user_query = (message.caption or "").strip()
-        if not user_query:
-            user_query = "Analiza detalladamente esta imagen en el contexto de mis entrenamientos y directivas."
-
-        user_id = str(update.effective_user.id)
-        active_memory = self.database.get_active_memory(user_id, limit=8)
-        attachments = [(img_bytes, "image/jpeg")]
-
-        loop = asyncio.get_running_loop()
-        try:
-            response_text = await loop.run_in_executor(
-                None,
-                lambda: self.analyzer.analyze_query(
-                    user_query,
-                    conversation_history=active_memory,
-                    attachments=attachments,
-                ),
-            )
-        except Exception as e:
-            logger.error("Error analizando foto con Gemini: %s", e)
-            response_text = f"❌ Ocurrió un error al procesar tu imagen: {str(e)}"
-
-        self.database.add_conversation_message(user_id, "user", f"[Imagen adjunta] {user_query}")
-        self.database.add_conversation_message(user_id, "model", response_text)
-
-        chunks = _split_long_message(response_text)
-        for chunk in chunks:
+        async with _send_typing_action(message.chat):
             try:
-                await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-            except Exception:
-                await message.reply_text(chunk)
+                await self.reader.sync_channel()
+            except Exception as e:
+                logger.debug("Sincronización incremental previa omitida: %s", e)
+
+            # La foto con el índice -1 contiene la mayor resolución
+            photo_obj = message.photo[-1]
+            try:
+                file_obj = await context.bot.get_file(photo_obj.file_id)
+                img_bytearray = await file_obj.download_as_bytearray()
+                img_bytes = bytes(img_bytearray)
+            except Exception as e:
+                logger.error("Error al descargar foto en Telegram: %s", e)
+                await message.reply_text("❌ No se pudo descargar la imagen para su análisis.")
+                return
+
+            user_query = (message.caption or "").strip()
+            if not user_query:
+                user_query = "Analiza detalladamente esta imagen en el contexto de mis entrenamientos y directivas."
+
+            user_id = str(update.effective_user.id)
+            active_memory = self.database.get_active_memory(user_id, limit=8)
+            attachments = [(img_bytes, "image/jpeg")]
+
+            loop = asyncio.get_running_loop()
+            try:
+                response_text = await loop.run_in_executor(
+                    None,
+                    lambda: self.analyzer.analyze_query(
+                        user_query,
+                        conversation_history=active_memory,
+                        attachments=attachments,
+                    ),
+                )
+            except Exception as e:
+                logger.error("Error analizando foto con Gemini: %s", e)
+                response_text = f"❌ Ocurrió un error al procesar tu imagen: {str(e)}"
+
+            self.database.add_conversation_message(user_id, "user", f"[Imagen adjunta] {user_query}")
+            self.database.add_conversation_message(user_id, "model", response_text)
+
+            chunks = _split_long_message(response_text)
+            for chunk in chunks:
+                try:
+                    await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    await message.reply_text(chunk)
 
     async def _handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Procesa documentos (PDF, TXT, CSV, imágenes enviadas como archivo sin comprimir, etc.)."""
@@ -404,59 +427,62 @@ class GymTelegramBot:
             await message.reply_text("❌ El archivo supera el límite de 20 MB permitido por Telegram.")
             return
 
-        await message.chat.send_action(action=ChatAction.TYPING)
-
-        try:
-            await self.reader.sync_channel()
-        except Exception as e:
-            logger.debug("Sincronización incremental previa omitida: %s", e)
-
-        file_name = doc.file_name or "documento"
-        mime_type = doc.mime_type
-        if not mime_type or mime_type == "application/octet-stream":
-            guessed, _ = mimetypes.guess_type(file_name)
-            mime_type = guessed or "application/octet-stream"
-
-        try:
-            file_obj = await context.bot.get_file(doc.file_id)
-            doc_bytearray = await file_obj.download_as_bytearray()
-            doc_bytes = bytes(doc_bytearray)
-        except Exception as e:
-            logger.error("Error al descargar documento en Telegram: %s", e)
-            await message.reply_text(f"❌ No se pudo descargar el archivo '{file_name}'.")
-            return
-
-        user_query = (message.caption or "").strip()
-        if not user_query:
-            user_query = f"Analiza detalladamente este documento ({file_name}) en el contexto de mis entrenamientos y directivas."
-
-        user_id = str(update.effective_user.id)
-        active_memory = self.database.get_active_memory(user_id, limit=8)
-        attachments = [(doc_bytes, mime_type)]
-
-        loop = asyncio.get_running_loop()
-        try:
-            response_text = await loop.run_in_executor(
-                None,
-                lambda: self.analyzer.analyze_query(
-                    user_query,
-                    conversation_history=active_memory,
-                    attachments=attachments,
-                ),
-            )
-        except Exception as e:
-            logger.error("Error analizando documento con Gemini: %s", e)
-            response_text = f"❌ Ocurrió un error al procesar el archivo '{file_name}': {str(e)}"
-
-        self.database.add_conversation_message(user_id, "user", f"[Archivo: {file_name}] {user_query}")
-        self.database.add_conversation_message(user_id, "model", response_text)
-
-        chunks = _split_long_message(response_text)
-        for chunk in chunks:
+        async with _send_typing_action(message.chat):
             try:
-                await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-            except Exception:
-                await message.reply_text(chunk)
+                await self.reader.sync_channel()
+            except Exception as e:
+                logger.debug("Sincronización incremental previa omitida: %s", e)
+
+            file_name = doc.file_name or "documento"
+            mime_type = doc.mime_type
+            if not mime_type or mime_type == "application/octet-stream":
+                guessed, _ = mimetypes.guess_type(file_name)
+                mime_type = guessed or "application/octet-stream"
+
+            try:
+                file_obj = await context.bot.get_file(doc.file_id)
+                doc_bytearray = await file_obj.download_as_bytearray()
+                doc_bytes = bytes(doc_bytearray)
+            except Exception as e:
+                logger.error("Error al descargar documento en Telegram: %s", e)
+                await message.reply_text(f"❌ No se pudo descargar el archivo '{file_name}'.")
+                return
+
+            user_query = (message.caption or "").strip()
+            if not user_query:
+                user_query = f"Analiza detalladamente este documento ({file_name}) en el contexto de mis entrenamientos y directivas."
+
+            user_id = str(update.effective_user.id)
+            active_memory = self.database.get_active_memory(user_id, limit=8)
+            attachments = [(doc_bytes, mime_type)]
+
+            loop = asyncio.get_running_loop()
+            try:
+                response_text = await loop.run_in_executor(
+                    None,
+                    lambda: self.analyzer.analyze_query(
+                        user_query,
+                        conversation_history=active_memory,
+                        attachments=attachments,
+                    ),
+                )
+            except Exception as e:
+                logger.error("Error analizando documento con Gemini: %s", e)
+                response_text = f"❌ Ocurrió un error al procesar el archivo '{file_name}': {str(e)}"
+
+            self.database.add_conversation_message(user_id, "user", f"[Archivo: {file_name}] {user_query}")
+            self.database.add_conversation_message(user_id, "model", response_text)
+
+            chunks = _split_long_message(response_text)
+            for chunk in chunks:
+                try:
+                    await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    await message.reply_text(chunk)
+
+    async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Captura y registra excepciones no controladas o fallos transitorios de red."""
+        logger.error("Excepción en bot de Telegram: %s", context.error)
 
     def build_application(self) -> Application:
         """Construye y configura la aplicación de python-telegram-bot."""
@@ -473,6 +499,7 @@ class GymTelegramBot:
             .build()
         )
 
+        app.add_error_handler(self._error_handler)
         app.add_handler(CommandHandler("start", self._handle_start))
         app.add_handler(CommandHandler("help", self._handle_help))
         app.add_handler(CommandHandler("stats", self._handle_stats))
