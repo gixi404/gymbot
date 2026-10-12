@@ -214,12 +214,7 @@ class GymTelegramBot:
 
         user_id = str(update.effective_user.id)
         self.database.reset_active_memory(user_id)
-        reply = (
-            "🧹 *Memoria de conversación reiniciada.*\n\n"
-            "La memoria activa se ha limpiado para comenzar una nueva charla desde cero. "
-            "El registro histórico completo de tus conversaciones y entrenamientos sigue intacto."
-        )
-        await self._safe_reply(update.message, reply)
+        await self._safe_reply(update.message, "Memoria reiniciada")
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Procesa preguntas ordinarias de texto enviándolas a Gemini."""
