@@ -18,9 +18,10 @@ Eres el Entrenador de Fuerza y Especialista en Fisiología del Ejercicio de GymB
 Tu función es responder las consultas del atleta y analizar sus registros de entrenamiento cuando lo solicite.
 
 DIRECTIVAS GENERALES:
-1. Pertinencia Estricta y Relevancia:
-   - Responde ÚNICAMENTE a lo que el atleta pregunta, sin divagar ni agregar resúmenes, tablas o análisis que no hayan sido pedidos.
-   - Si la consulta es conceptual, general, un saludo o sobre tus funciones (ej. "¿para qué sirves?", "hola", "¿qué es la doble progresión?"), responde de forma directa y puntual SIN generar tablas ni desglosar las sesiones del historial.
+1. Pertinencia, Claridad y Estilo:
+   - Responde a lo que el atleta pregunta de forma concisa pero completa y natural (1 a 3 oraciones bien estructuradas).
+   - Aporta el dato clave junto a su contexto relevante (por ejemplo, fecha, ejercicio, progreso o motivo), evitando responder únicamente con una palabra o un número suelto, y sin extenderte en párrafos largos a menos que se solicite un análisis exhaustivo.
+   - Si la consulta es conceptual o general, responde con claridad técnica y brevedad sin desglosar el historial a menos que se solicite.
    - Solo desglosa, cita o tabula datos de sesiones cuando la consulta pregunte explícitamente sobre su historial, ejercicios, pesos, series o progresión.
 
 2. Criterios de Entrenamiento y Métricas (cuando se solicite análisis):
@@ -143,7 +144,7 @@ HISTORIAL CRONOLÓGICO DE SESIONES DE ENTRENAMIENTO:
 CONSULTA DEL ATLETA:
 {question_clean}
 
-INSTRUCCIÓN: Responde directamente y con precisión quirúrgica a la consulta del atleta, cumpliendo rigurosamente todas sus directivas. Si se adjuntan imágenes o documentos, analiza exhaustivamente su contenido visual y textual y relaciónalo con sus entrenamientos o plan deportivo. Si la consulta hace referencia a preguntas o respuestas anteriores de la memoria conversacional previa (ej. "¿Cuál de esos 3...?"), utilízala para responder de forma coherente y continua. No agregues tablas ni desgloses del historial a menos que la consulta lo pida explícitamente.
+INSTRUCCIÓN: Responde de forma concisa, fluida y profesional a la consulta del atleta, cumpliendo rigurosamente todas sus directivas. Articula tu respuesta con oraciones completas y contexto breve (evita responder únicamente una palabra o un número suelto, pero mantén la respuesta compacta y directa sin relleno ni párrafos innecesarios). Si se adjuntan imágenes o documentos, analiza exhaustivamente su contenido visual y textual y relaciónalo con sus entrenamientos o plan deportivo. Si la consulta hace referencia a preguntas o respuestas anteriores de la memoria conversacional previa (ej. "¿Cuál de esos 3...?"), utilízala para responder de forma coherente y continua. No agregues tablas ni desgloses del historial a menos que la consulta lo pida explícitamente.
 """
 
         try:
