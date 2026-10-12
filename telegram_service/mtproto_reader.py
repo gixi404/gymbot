@@ -3,18 +3,17 @@
 import asyncio
 import logging
 import time
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import AsyncGenerator, List, Optional, Tuple, Union
 
 from telethon import TelegramClient
-from telethon.sessions import StringSession
 from telethon.errors import (
     FloodWaitError,
     RPCError,
-    SessionPasswordNeededError,
 )
+from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
 
 from config.settings import Settings, get_settings
@@ -35,15 +34,15 @@ class TelegramWorkoutReader:
 
     def __init__(
         self,
-        settings: Optional[Settings] = None,
-        database: Optional[GymDatabase] = None,
+        settings: Settings | None = None,
+        database: GymDatabase | None = None,
     ):
         self.settings = settings or get_settings()
         self.database = database or GymDatabase(self.settings.DATABASE_PATH)
         self.api_id = self.settings.TELEGRAM_API_ID
         self.api_hash = self.settings.TELEGRAM_API_HASH
         self.session_name = self.settings.TELEGRAM_SESSION_NAME
-        self.chat_ids: List[Union[int, str]] = self.settings.workout_chat_ids
+        self.chat_ids: list[int | str] = self.settings.workout_chat_ids
         self._sync_lock = asyncio.Lock()
         self._last_sync_timestamp: float = 0.0
 
@@ -56,9 +55,7 @@ class TelegramWorkoutReader:
         return str(session_path)
 
     @asynccontextmanager
-    async def get_client(
-        self, max_retries: int = 3, retry_delay: float = 1.5
-    ) -> AsyncGenerator[TelegramClient, None]:
+    async def get_client(self, max_retries: int = 3, retry_delay: float = 1.5) -> AsyncGenerator[TelegramClient, None]:
         """Abre una conexión efímera con Telethon y garantiza su desconexión al finalizar.
 
         Incluye reintentos breves por si otro proceso local está liberando el archivo de sesión.
@@ -88,9 +85,7 @@ class TelegramWorkoutReader:
                 await asyncio.sleep(retry_delay)
 
         if not connected:
-            raise RuntimeError(
-                f"No se pudo conectar el cliente MTProto tras {max_retries} intentos: {last_error}"
-            )
+            raise RuntimeError(f"No se pudo conectar el cliente MTProto tras {max_retries} intentos: {last_error}")
 
         try:
             if not await client.is_user_authorized():
@@ -109,7 +104,7 @@ class TelegramWorkoutReader:
         self,
         force_all: bool = False,
         min_interval_seconds: float = 15.0,
-    ) -> Tuple[int, int]:
+    ) -> tuple[int, int]:
         """Sincroniza incrementalmente los mensajes de todos los chats de entrenamientos hacia SQLite.
 
         Argumentos:
@@ -122,7 +117,11 @@ class TelegramWorkoutReader:
         async with self._sync_lock:
             stats = self.database.get_stats()
             now = time.monotonic()
-            if not force_all and self._last_sync_timestamp > 0 and (now - self._last_sync_timestamp < min_interval_seconds):
+            if (
+                not force_all
+                and self._last_sync_timestamp > 0
+                and (now - self._last_sync_timestamp < min_interval_seconds)
+            ):
                 logger.debug(
                     "Sincronización omitida por debounce (última hace %.1fs).",
                     now - self._last_sync_timestamp,
@@ -156,7 +155,7 @@ class TelegramWorkoutReader:
                         force_all,
                     )
 
-                    raw_messages_to_save: List[RawMessage] = []
+                    raw_messages_to_save: list[RawMessage] = []
                     max_seen_id = min_id
 
                     try:
@@ -184,7 +183,7 @@ class TelegramWorkoutReader:
                                 text=text_content,
                                 edit_date=edit_date,
                                 media_type=media_type,
-                                created_at=datetime.now(timezone.utc),
+                                created_at=datetime.now(UTC),
                             )
                             raw_messages_to_save.append(raw_msg)
                             if msg.id > max_seen_id:

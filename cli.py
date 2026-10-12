@@ -4,7 +4,6 @@
 import argparse
 import asyncio
 import sys
-from typing import Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -103,8 +102,8 @@ def display_stats(database: GymDatabase) -> None:
 def process_query(
     analyzer: GymAnalyzer,
     query: str,
-    reader: Optional[TelegramWorkoutReader] = None,
-    database: Optional[GymDatabase] = None,
+    reader: TelegramWorkoutReader | None = None,
+    database: GymDatabase | None = None,
 ) -> None:
     """Envía la pregunta al analizador de IA y presenta la respuesta formateada."""
     with console.status("Pensando...", spinner="dots"):

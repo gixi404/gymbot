@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import AsyncGenerator, List, Optional, Tuple
+from collections.abc import AsyncGenerator
 
 from google import genai
 from google.genai import types
@@ -16,15 +16,13 @@ logger = logging.getLogger(__name__)
 class GeminiClient:
     """Cliente para interactuar con Gemini 2.5 Flash optimizado para el Free Tier."""
 
-    def __init__(self, settings: Optional[Settings] = None):
+    def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
         self.api_key = self.settings.GEMINI_API_KEY
         self.model_name = self.settings.GEMINI_MODEL
 
         if not self.api_key:
-            raise ValueError(
-                "GEMINI_API_KEY no está configurada en las variables de entorno (.env)."
-            )
+            raise ValueError("GEMINI_API_KEY no está configurada en las variables de entorno (.env).")
 
         # Inicialización del cliente oficial google-genai
         self.client = genai.Client(api_key=self.api_key)
@@ -33,7 +31,7 @@ class GeminiClient:
         self,
         prompt: str,
         system_instruction: str,
-        attachments: Optional[List[Tuple[bytes, str]]] = None,
+        attachments: list[tuple[bytes, str]] | None = None,
         temperature: float = 0.2,
         max_retries: int = 3,
         base_backoff: float = 1.5,
@@ -112,9 +110,7 @@ class GeminiClient:
                     logger.error("Excepción inesperada al invocar Gemini (%s): %s", current_model, e)
                     raise
 
-        raise RuntimeError(
-            f"Fallo al invocar Gemini con modelos {candidate_models}: {last_error}"
-        )
+        raise RuntimeError(f"Fallo al invocar Gemini con modelos {candidate_models}: {last_error}")
 
     def transcribe_audio(
         self,
@@ -185,7 +181,7 @@ class GeminiClient:
         self,
         prompt: str,
         system_instruction: str,
-        attachments: Optional[List[Tuple[bytes, str]]] = None,
+        attachments: list[tuple[bytes, str]] | None = None,
         temperature: float = 0.2,
     ) -> AsyncGenerator[str, None]:
         """Genera respuesta en modo streaming asíncrono en tiempo real con fallback automático."""
@@ -250,4 +246,3 @@ class GeminiClient:
             logger.warning("Streaming no disponible. Recurriendo a generación síncrona estándar: %s", last_error)
             fallback_text = self.generate_response(prompt, system_instruction, attachments, temperature)
             yield fallback_text
-

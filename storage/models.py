@@ -1,8 +1,7 @@
 """Modelos de datos para el almacenamiento local de GymBot."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 
 @dataclass
@@ -12,11 +11,11 @@ class RawMessage:
     id: int
     date: datetime
     text: str
-    edit_date: Optional[datetime] = None
-    media_type: Optional[str] = None
-    chat_id: Optional[str] = None
-    chat_title: Optional[str] = None
-    created_at: Optional[datetime] = None
+    edit_date: datetime | None = None
+    media_type: str | None = None
+    chat_id: str | None = None
+    chat_title: str | None = None
+    created_at: datetime | None = None
 
     def to_summary_line(self) -> str:
         """Formatea el mensaje para la ventana de contexto de IA con fecha y texto."""
@@ -40,6 +39,6 @@ class DatabaseStats:
     """Métricas y estadísticas de la base de datos local."""
 
     total_messages: int
-    first_message_date: Optional[datetime] = None
-    last_message_date: Optional[datetime] = None
-    last_sync_at: Optional[datetime] = None
+    first_message_date: datetime | None = None
+    last_message_date: datetime | None = None
+    last_sync_at: datetime | None = None

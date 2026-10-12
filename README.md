@@ -241,7 +241,13 @@ Para que el bot móvil y la sincronización automática funcionen permanentement
 
 ---
 
-## 🧪 Pruebas Unitarias
+## 🧪 Pruebas Unitarias y Calidad de Código
+
+Para verificar el linter y formateador (Ruff):
+```bash
+ruff check .
+ruff format --check .
+```
 
 Para ejecutar la suite de pruebas automatizadas:
 ```bash

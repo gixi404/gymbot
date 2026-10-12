@@ -1,6 +1,5 @@
 """Pruebas unitarias para la persistencia SQLite en GymDatabase."""
 
-import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -175,7 +174,6 @@ class TestGymDatabase(unittest.TestCase):
         last_id_c2 = self.db.get_last_synced_id("-1002")
         self.assertEqual(last_id_c2, 0)
 
-
     def test_composite_primary_key_multi_chat_coexistence(self):
         now = datetime.now()
         # Mismo id=100 en dos chats diferentes
@@ -201,5 +199,3 @@ class TestGymDatabase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

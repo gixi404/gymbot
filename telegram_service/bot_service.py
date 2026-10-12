@@ -1,17 +1,14 @@
 """Bot secundario de Telegram para consultas móviles con autenticación estricta por whitelist."""
 
 import asyncio
-import html
 import logging
 import mimetypes
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
-from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -21,6 +18,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 from ai.analyzer import GymAnalyzer
 from config.settings import Settings, get_settings
@@ -37,6 +35,7 @@ TELEGRAM_MESSAGE_MAX_LENGTH = 4000
 @asynccontextmanager
 async def _send_typing_action(chat, interval: float = 4.0):
     """Mantiene activo el indicador 'escribiendo...' en Telegram mientras se procesa la solicitud."""
+
     async def _keep_typing():
         try:
             while True:
@@ -97,22 +96,19 @@ class GymTelegramBot:
 
     def __init__(
         self,
-        settings: Optional[Settings] = None,
-        database: Optional[GymDatabase] = None,
-        reader: Optional[TelegramWorkoutReader] = None,
-        analyzer: Optional[GymAnalyzer] = None,
+        settings: Settings | None = None,
+        database: GymDatabase | None = None,
+        reader: TelegramWorkoutReader | None = None,
+        analyzer: GymAnalyzer | None = None,
     ):
         self.settings = settings or get_settings()
         self.database = database or GymDatabase(self.settings.DATABASE_PATH)
         self.reader = reader or TelegramWorkoutReader(self.settings, self.database)
         self.analyzer = analyzer or GymAnalyzer(self.settings, self.database)
-        self._app: Optional[Application] = None
+        self._app: Application | None = None
 
         if not self.settings.TELEGRAM_BOT_TOKEN:
-            raise ValueError(
-                "TELEGRAM_BOT_TOKEN no configurado en .env. "
-                "Crea un bot con @BotFather y añade el token."
-            )
+            raise ValueError("TELEGRAM_BOT_TOKEN no configurado en .env. Crea un bot con @BotFather y añade el token.")
 
         self.allowed_ids = set(self.settings.ALLOWED_TELEGRAM_USER_IDS)
         if not self.allowed_ids:
@@ -221,7 +217,9 @@ class GymTelegramBot:
             await message.reply_photo(photo=photo, caption=caption)
 
     @staticmethod
-    async def _safe_reply_document(message, document, filename: str, caption: str = "", parse_mode: str = ParseMode.MARKDOWN) -> None:
+    async def _safe_reply_document(
+        message, document, filename: str, caption: str = "", parse_mode: str = ParseMode.MARKDOWN
+    ) -> None:
         """Envía un documento intentando formato Markdown en el caption, con fallback a texto plano."""
         try:
             await message.reply_document(document=document, filename=filename, caption=caption, parse_mode=parse_mode)
@@ -297,7 +295,7 @@ class GymTelegramBot:
             if not buf:
                 await self._safe_reply(
                     message,
-                    "⚠️ No hay suficientes registros de peso para generar la gráfica (se requieren al menos 2 mediciones en PesoCorporal)."
+                    "⚠️ No hay suficientes registros de peso para generar la gráfica (se requieren al menos 2 mediciones en PesoCorporal).",
                 )
                 return
             await self._safe_reply_photo(message, photo=buf, caption="📈 *Evolución de Peso Corporal*")
@@ -306,7 +304,7 @@ class GymTelegramBot:
             if not res:
                 await self._safe_reply(
                     message,
-                    f"⚠️ No se encontraron suficientes sesiones registradas para generar la gráfica de '{query}'."
+                    f"⚠️ No se encontraron suficientes sesiones registradas para generar la gráfica de '{query}'.",
                 )
                 return
             buf, canonical = res
@@ -339,9 +337,7 @@ class GymTelegramBot:
         ex_name = " ".join(args).strip()
         async with _send_typing_action(update.message.chat):
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None, lambda: self.analyzer.recommend_next_progression(ex_name)
-            )
+            result = await loop.run_in_executor(None, lambda: self.analyzer.recommend_next_progression(ex_name))
             await self._safe_reply(update.message, result)
 
     async def _handle_weekly(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -396,9 +392,15 @@ class GymTelegramBot:
         if data == "btn_main_menu":
             await self._safe_edit(msg, "📋 *Menú de Acciones Rápidas:*", reply_markup=self._get_main_keyboard())
         elif data == "btn_chart_menu":
-            await self._safe_edit(msg, "📊 *Selecciona qué gráfico deseas generar:*", reply_markup=self._get_chart_keyboard())
+            await self._safe_edit(
+                msg, "📊 *Selecciona qué gráfico deseas generar:*", reply_markup=self._get_chart_keyboard()
+            )
         elif data == "btn_progression_menu":
-            await self._safe_edit(msg, "🎯 *Selecciona el ejercicio para calcular tu próxima carga:*", reply_markup=self._get_progression_keyboard())
+            await self._safe_edit(
+                msg,
+                "🎯 *Selecciona el ejercicio para calcular tu próxima carga:*",
+                reply_markup=self._get_progression_keyboard(),
+            )
         elif data == "chart_weight":
             await self._generate_and_send_chart(msg, "peso")
         elif data == "chart_banca":
@@ -411,9 +413,7 @@ class GymTelegramBot:
             ex_name = data.replace("prog_", "").replace("_", " ")
             async with _send_typing_action(msg.chat):
                 loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    None, lambda: self.analyzer.recommend_next_progression(ex_name)
-                )
+                result = await loop.run_in_executor(None, lambda: self.analyzer.recommend_next_progression(ex_name))
                 await self._safe_reply(msg, result)
         elif data == "btn_weekly":
             async with _send_typing_action(msg.chat):
@@ -642,9 +642,7 @@ class GymTelegramBot:
 
             loop = asyncio.get_running_loop()
             try:
-                transcription = await loop.run_in_executor(
-                    None, self.analyzer.transcribe_audio, audio_bytes, mime_type
-                )
+                transcription = await loop.run_in_executor(None, self.analyzer.transcribe_audio, audio_bytes, mime_type)
             except Exception as e:
                 logger.error("Error transcribiendo audio con Gemini: %s", e)
                 await message.reply_text(f"❌ Error al transcribir el audio: {str(e)}")
@@ -815,12 +813,7 @@ class GymTelegramBot:
             read_timeout=30.0,
             write_timeout=20.0,
         )
-        app = (
-            ApplicationBuilder()
-            .token(self.settings.TELEGRAM_BOT_TOKEN)
-            .request(request)
-            .build()
-        )
+        app = ApplicationBuilder().token(self.settings.TELEGRAM_BOT_TOKEN).request(request).build()
 
         app.add_error_handler(self._error_handler)
         app.add_handler(CommandHandler("start", self._handle_start))

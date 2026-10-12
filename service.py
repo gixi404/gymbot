@@ -5,13 +5,12 @@ Ejecuta el bot secundario de Telegram para consultas móviles y la sincronizaci�
 """
 
 import asyncio
-from datetime import datetime
 import logging
 import shutil
 import signal
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from ai.analyzer import GymAnalyzer
 from config.settings import Settings, get_settings
@@ -32,6 +31,7 @@ def _is_valid_telethon_session(path: Path) -> bool:
         return False
     try:
         import sqlite3
+
         conn = sqlite3.connect(str(path))
         cursor = conn.cursor()
         cursor.execute("SELECT auth_key FROM sessions WHERE auth_key IS NOT NULL")
@@ -47,6 +47,7 @@ def _has_stored_messages(path: Path) -> bool:
         return False
     try:
         import sqlite3
+
         conn = sqlite3.connect(str(path))
         cursor = conn.cursor()
         cursor.execute("SELECT count(*) FROM raw_messages")
@@ -122,7 +123,7 @@ async def periodic_sync_task(reader: TelegramWorkoutReader, interval_minutes: in
 async def weekly_summary_task(bot_service: GymTelegramBot, check_interval_seconds: int = 1800) -> None:
     """Monitorea periódicamente y envía el resumen semanal proactivo los domingos a partir de las 20:00 hs."""
     logger.info("Monitor de resumen semanal proactivo activado (domingos 20:00).")
-    last_sent_week: Optional[int] = None
+    last_sent_week: int | None = None
 
     while True:
         try:
@@ -182,11 +183,9 @@ async def run_services() -> None:
     logger.info("Bot secundario de Telegram iniciado y escuchando mensajes en polling...")
 
     # 4. Lanzamiento de sincronización periódica y resumen proactivo en background
-    sync_task: Optional[asyncio.Task] = None
+    sync_task: asyncio.Task | None = None
     if settings.AUTO_SYNC_INTERVAL_MINUTES > 0:
-        sync_task = asyncio.create_task(
-            periodic_sync_task(reader, settings.AUTO_SYNC_INTERVAL_MINUTES)
-        )
+        sync_task = asyncio.create_task(periodic_sync_task(reader, settings.AUTO_SYNC_INTERVAL_MINUTES))
 
     weekly_task = asyncio.create_task(weekly_summary_task(bot_service))
 

@@ -1,9 +1,6 @@
 """Pruebas unitarias para los argumentos y utilidades de la CLI."""
 
 import unittest
-from unittest.mock import MagicMock, patch
-
-from storage.models import DatabaseStats
 
 
 class TestCLIUtilities(unittest.TestCase):

@@ -1,9 +1,8 @@
 """Configuración tipada y validación de variables de entorno para GymBot."""
 
-import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import field_validator
@@ -31,7 +30,7 @@ class Settings(BaseSettings):
     TELEGRAM_API_HASH: str
     TELEGRAM_SESSION_NAME: str = "gymbot_user"
     TELEGRAM_STRING_SESSION: str = ""
-    TELEGRAM_WORKOUT_CHAT_ID: Union[int, str, list[Union[int, str]]]
+    TELEGRAM_WORKOUT_CHAT_ID: int | str | list[int | str]
 
     # 2. Credenciales Bot Secundario (Telegram Bot API - Consultas móviles)
     TELEGRAM_BOT_TOKEN: str = ""
@@ -46,7 +45,7 @@ class Settings(BaseSettings):
     AUTO_SYNC_INTERVAL_MINUTES: int = 60  # 0 desactiva la sincronización periódica
 
     @property
-    def workout_chat_ids(self) -> list[Union[int, str]]:
+    def workout_chat_ids(self) -> list[int | str]:
         """Devuelve una lista unificada de todos los IDs de chat configurados."""
         if isinstance(self.TELEGRAM_WORKOUT_CHAT_ID, list):
             return self.TELEGRAM_WORKOUT_CHAT_ID
@@ -54,9 +53,10 @@ class Settings(BaseSettings):
 
     @field_validator("TELEGRAM_WORKOUT_CHAT_ID", mode="before")
     @classmethod
-    def parse_workout_chat_id(cls, v: Any) -> Union[int, str, list[Union[int, str]]]:
+    def parse_workout_chat_id(cls, v: Any) -> int | str | list[int | str]:
         """Convierte identificadores numéricos a enteros y listas separadas por comas."""
-        def parse_single(item: Any) -> Union[int, str]:
+
+        def parse_single(item: Any) -> int | str:
             if isinstance(item, (int, float)):
                 return int(item)
             s = str(item).strip()

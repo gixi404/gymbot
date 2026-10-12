@@ -71,9 +71,13 @@ async def main() -> None:
                 title = getattr(entity, "title", getattr(entity, "first_name", "Chat Privado"))
                 print(f"✅ ¡Chat encontrado! Título: '{title}' (ID: {entity.id})")
             except Exception as e:
-                print(f"⚠️ Advertencia: No se pudo resolver automáticamente el chat '{settings.TELEGRAM_WORKOUT_CHAT_ID}'.")
+                print(
+                    f"⚠️ Advertencia: No se pudo resolver automáticamente el chat '{settings.TELEGRAM_WORKOUT_CHAT_ID}'."
+                )
                 print(f"   Detalle: {e}")
-                print("   Asegúrate de haber ingresado en ese chat desde esta cuenta o que el ID/username sea correcto.")
+                print(
+                    "   Asegúrate de haber ingresado en ese chat desde esta cuenta o que el ID/username sea correcto."
+                )
         except Exception as e:
             print(f"⚠️ Advertencia: No se pudo resolver automáticamente el chat '{settings.TELEGRAM_WORKOUT_CHAT_ID}'.")
             print(f"   Detalle: {e}")

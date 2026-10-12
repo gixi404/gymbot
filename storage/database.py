@@ -4,12 +4,12 @@ import csv
 import io
 import logging
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Generator, List, Optional, Union
 
-from .models import DatabaseStats, RawMessage, SyncMetadata
+from .models import DatabaseStats, RawMessage
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class GymDatabase:
     """Manejador de base de datos SQLite optimizado para concurrencia."""
 
-    def __init__(self, db_path: Union[str, Path] = "gymbot.db"):
+    def __init__(self, db_path: str | Path = "gymbot.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.init_db()
@@ -150,7 +150,7 @@ class GymDatabase:
             )
         logger.debug("Base de datos SQLite inicializada en: %s", self.db_path)
 
-    def upsert_messages(self, messages: List[RawMessage]) -> int:
+    def upsert_messages(self, messages: list[RawMessage]) -> int:
         """Inserta o actualiza mensajes de forma idempotente con soporte multi-chat.
 
         Retorna la cantidad de mensajes procesados.
@@ -188,7 +188,7 @@ class GymDatabase:
 
         return len(messages)
 
-    def get_last_synced_id(self, channel_id: Union[str, int]) -> int:
+    def get_last_synced_id(self, channel_id: str | int) -> int:
         """Obtiene el ID del último mensaje sincronizado para el chat."""
         cid = str(channel_id)
         with self.get_connection() as conn:
@@ -210,13 +210,13 @@ class GymDatabase:
 
     def update_sync_metadata(
         self,
-        channel_id: Union[str, int],
+        channel_id: str | int,
         last_message_id: int,
-        total_messages: Optional[int] = None,
+        total_messages: int | None = None,
     ) -> None:
         """Actualiza el cursor de sincronización para el canal."""
         cid = str(channel_id)
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
 
         with self.get_connection() as conn:
             if total_messages is None:
@@ -241,28 +241,20 @@ class GymDatabase:
             id=row["id"],
             date=datetime.fromisoformat(row["date"]),
             text=row["text"],
-            edit_date=(
-                datetime.fromisoformat(row["edit_date"])
-                if row["edit_date"]
-                else None
-            ),
+            edit_date=(datetime.fromisoformat(row["edit_date"]) if row["edit_date"] else None),
             media_type=row["media_type"],
             chat_id=row["chat_id"] if "chat_id" in col_names else None,
             chat_title=row["chat_title"] if "chat_title" in col_names else None,
-            created_at=(
-                datetime.fromisoformat(row["created_at"])
-                if row["created_at"]
-                else None
-            ),
+            created_at=(datetime.fromisoformat(row["created_at"]) if row["created_at"] else None),
         )
 
     def get_messages(
         self,
-        since: Optional[datetime] = None,
-        until: Optional[datetime] = None,
-        limit: Optional[int] = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int | None = None,
         reverse: bool = False,
-    ) -> List[RawMessage]:
+    ) -> list[RawMessage]:
         """Obtiene los mensajes registrados ordenados por fecha.
 
         Por defecto, reverse=False devuelve los mensajes en orden cronológico (más antiguo a más reciente).
@@ -289,14 +281,14 @@ class GymDatabase:
         {limit_clause};
         """
 
-        results: List[RawMessage] = []
+        results: list[RawMessage] = []
         with self.get_connection() as conn:
             cursor = conn.execute(query, params)
             for row in cursor.fetchall():
                 results.append(self._row_to_raw_message(row))
         return results
 
-    def get_stats(self, channel_id: Optional[Union[str, int]] = None) -> DatabaseStats:
+    def get_stats(self, channel_id: str | int | None = None) -> DatabaseStats:
         """Recupera estadísticas de la base de datos local."""
         with self.get_connection() as conn:
             cursor = conn.execute(
@@ -310,16 +302,8 @@ class GymDatabase:
             )
             row = cursor.fetchone()
             total_count = int(row["total_count"]) if row else 0
-            min_date = (
-                datetime.fromisoformat(row["min_date"])
-                if row and row["min_date"]
-                else None
-            )
-            max_date = (
-                datetime.fromisoformat(row["max_date"])
-                if row and row["max_date"]
-                else None
-            )
+            min_date = datetime.fromisoformat(row["min_date"]) if row and row["min_date"] else None
+            max_date = datetime.fromisoformat(row["max_date"]) if row and row["max_date"] else None
 
             last_sync_at = None
             if isinstance(channel_id, (list, tuple, set)):
@@ -342,9 +326,7 @@ class GymDatabase:
                 if c_row and c_row["last_sync_at"]:
                     last_sync_at = datetime.fromisoformat(c_row["last_sync_at"])
             else:
-                c_cursor = conn.execute(
-                    "SELECT MAX(last_sync_at) as max_sync FROM sync_metadata;"
-                )
+                c_cursor = conn.execute("SELECT MAX(last_sync_at) as max_sync FROM sync_metadata;")
                 c_row = c_cursor.fetchone()
                 if c_row and c_row["max_sync"]:
                     last_sync_at = datetime.fromisoformat(c_row["max_sync"])
@@ -356,7 +338,7 @@ class GymDatabase:
                 last_sync_at=last_sync_at,
             )
 
-    def search_messages(self, query_term: str, limit: int = 50) -> List[RawMessage]:
+    def search_messages(self, query_term: str, limit: int = 50) -> list[RawMessage]:
         """Búsqueda simple por palabra clave dentro del texto de entrenamientos."""
         query = """
         SELECT id, chat_id, chat_title, date, text, edit_date, media_type, created_at
@@ -366,7 +348,7 @@ class GymDatabase:
         LIMIT ?;
         """
         pattern = f"%{query_term}%"
-        results: List[RawMessage] = []
+        results: list[RawMessage] = []
         with self.get_connection() as conn:
             cursor = conn.execute(query, (pattern, limit))
             for row in cursor.fetchall():
@@ -401,7 +383,7 @@ class GymDatabase:
                 (str(user_id), role, content, session_id),
             )
 
-    def get_active_memory(self, user_id: str, limit: int = 10) -> List[dict]:
+    def get_active_memory(self, user_id: str, limit: int = 10) -> list[dict]:
         """Obtiene los últimos mensajes de la sesión activa para proveer contexto de memoria al modelo."""
         session_id = self.get_current_session_id(user_id)
         with self.get_connection() as conn:
@@ -457,14 +439,16 @@ class GymDatabase:
         writer.writerow(["ID", "Fecha_UTC", "Origen", "Texto", "Tipo_Media", "Fecha_Edicion"])
 
         for msg in messages:
-            writer.writerow([
-                msg.id,
-                msg.date.strftime("%Y-%m-%d %H:%M:%S"),
-                msg.chat_title or msg.chat_id or "",
-                msg.text,
-                msg.media_type or "",
-                msg.edit_date.strftime("%Y-%m-%d %H:%M:%S") if msg.edit_date else "",
-            ])
+            writer.writerow(
+                [
+                    msg.id,
+                    msg.date.strftime("%Y-%m-%d %H:%M:%S"),
+                    msg.chat_title or msg.chat_id or "",
+                    msg.text,
+                    msg.media_type or "",
+                    msg.edit_date.strftime("%Y-%m-%d %H:%M:%S") if msg.edit_date else "",
+                ]
+            )
 
         bytes_buffer = io.BytesIO(string_buffer.getvalue().encode("utf-8-sig"))
         bytes_buffer.seek(0)

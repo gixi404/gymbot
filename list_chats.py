@@ -51,7 +51,6 @@ async def main() -> None:
     found_matches = []
 
     async for dialog in client.iter_dialogs():
-        entity = dialog.entity
         title = dialog.name or "Sin nombre"
         chat_id = dialog.id
 

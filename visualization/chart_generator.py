@@ -4,7 +4,6 @@ import io
 import logging
 import re
 from datetime import datetime
-from typing import List, Optional, Tuple
 
 import matplotlib
 
@@ -17,15 +16,15 @@ from storage.models import RawMessage
 logger = logging.getLogger(__name__)
 
 # Paleta oscura moderna
-BG_COLOR = "#0f172a"        # Slate 900
-PANEL_COLOR = "#1e293b"     # Slate 800
-GRID_COLOR = "#334155"      # Slate 700
-TEXT_COLOR = "#f8fafc"      # Slate 50
-SUBTEXT_COLOR = "#94a3b8"   # Slate 400
+BG_COLOR = "#0f172a"  # Slate 900
+PANEL_COLOR = "#1e293b"  # Slate 800
+GRID_COLOR = "#334155"  # Slate 700
+TEXT_COLOR = "#f8fafc"  # Slate 50
+SUBTEXT_COLOR = "#94a3b8"  # Slate 400
 PRIMARY_ACCENT = "#38bdf8"  # Sky 400
-SECONDARY_ACCENT = "#f59e0b"# Amber 500
+SECONDARY_ACCENT = "#f59e0b"  # Amber 500
 SUCCESS_ACCENT = "#10b981"  # Emerald 500
-PURPLE_ACCENT = "#a855f7"   # Purple 500
+PURPLE_ACCENT = "#a855f7"  # Purple 500
 
 
 class ChartGenerator:
@@ -49,9 +48,9 @@ class ChartGenerator:
             spine.set_alpha(0.5)
 
     @classmethod
-    def parse_weight_entries(cls, messages: List[RawMessage]) -> List[Tuple[datetime, float]]:
+    def parse_weight_entries(cls, messages: list[RawMessage]) -> list[tuple[datetime, float]]:
         """Extrae todas las mediciones de peso con su fecha respectiva."""
-        entries: List[Tuple[datetime, float]] = []
+        entries: list[tuple[datetime, float]] = []
 
         # Patrón para líneas tipo: "07/10/26 - 70.05 kg" o "15/04/26 - 67.70 kg"
         multi_line_pattern = re.compile(
@@ -92,15 +91,15 @@ class ChartGenerator:
 
         # Ordenar cronológicamente y deduplicar por fecha (manteniendo el último del día)
         entries.sort(key=lambda x: x[0])
-        deduped: dict[str, Tuple[datetime, float]] = {}
+        deduped: dict[str, tuple[datetime, float]] = {}
         for dt, w in entries:
             key = dt.strftime("%Y-%m-%d")
             deduped[key] = (dt, w)
 
-        return sorted(list(deduped.values()), key=lambda x: x[0])
+        return sorted(deduped.values(), key=lambda x: x[0])
 
     @classmethod
-    def generate_weight_chart(cls, messages: List[RawMessage]) -> Optional[io.BytesIO]:
+    def generate_weight_chart(cls, messages: list[RawMessage]) -> io.BytesIO | None:
         """Genera un gráfico de evolución de peso corporal con media móvil y estadísticas."""
         points = cls.parse_weight_entries(messages)
         if len(points) < 2:
@@ -112,7 +111,8 @@ class ChartGenerator:
         fig, ax = plt.subplots(figsize=(9, 5), dpi=140)
         try:
             cls._apply_dark_style(
-                fig, ax,
+                fig,
+                ax,
                 title="Evolución del Peso Corporal",
                 xlabel="Fecha",
                 ylabel="Peso (kg)",
@@ -120,9 +120,12 @@ class ChartGenerator:
 
             # Curva de mediciones
             ax.plot(
-                dates, weights,
-                marker="o", markersize=4.5,
-                color=PRIMARY_ACCENT, linewidth=1.8,
+                dates,
+                weights,
+                marker="o",
+                markersize=4.5,
+                color=PRIMARY_ACCENT,
+                linewidth=1.8,
                 label="Peso registrado",
                 alpha=0.9,
             )
@@ -137,9 +140,12 @@ class ChartGenerator:
                     rolling_avg.append(sum(subset) / len(subset))
 
                 ax.plot(
-                    dates, rolling_avg,
-                    color=SECONDARY_ACCENT, linewidth=2.2, linestyle="-",
-                    label=f"Tendencia suavizada",
+                    dates,
+                    rolling_avg,
+                    color=SECONDARY_ACCENT,
+                    linewidth=2.2,
+                    linestyle="-",
+                    label="Tendencia suavizada",
                     alpha=0.95,
                 )
 
@@ -159,12 +165,14 @@ class ChartGenerator:
                 f"Mín: {min_w:.1f} kg  |  Máx: {max_w:.1f} kg"
             )
             ax.text(
-                0.03, 0.94, stats_box,
+                0.03,
+                0.94,
+                stats_box,
                 transform=ax.transAxes,
                 fontsize=8.5,
                 color=TEXT_COLOR,
                 verticalalignment="top",
-                bbox=dict(boxstyle="round,pad=0.5", facecolor=BG_COLOR, edgecolor=GRID_COLOR, alpha=0.85),
+                bbox={"boxstyle": "round,pad=0.5", "facecolor": BG_COLOR, "edgecolor": GRID_COLOR, "alpha": 0.85},
             )
 
             ax.legend(
@@ -186,12 +194,12 @@ class ChartGenerator:
 
     @classmethod
     def parse_exercise_data(
-        cls, exercise_query: str, messages: List[RawMessage]
-    ) -> Tuple[str, List[Tuple[datetime, float, float]]]:
+        cls, exercise_query: str, messages: list[RawMessage]
+    ) -> tuple[str, list[tuple[datetime, float, float]]]:
         """Busca un ejercicio y extrae (fecha, carga_maxima, 1rm_estimado_maximo) por sesión."""
         query_norm = exercise_query.strip().lower()
         matched_canonical = ""
-        sessions: dict[str, Tuple[datetime, float, float]] = {}
+        sessions: dict[str, tuple[datetime, float, float]] = {}
 
         for msg in messages:
             # Solo chats de entrenamientos
@@ -254,13 +262,11 @@ class ChartGenerator:
                             max(curr[2], est_1rm),
                         )
 
-        result_list = sorted(list(sessions.values()), key=lambda x: x[0])
+        result_list = sorted(sessions.values(), key=lambda x: x[0])
         return matched_canonical or exercise_query.title(), result_list
 
     @classmethod
-    def generate_exercise_chart(
-        cls, exercise_query: str, messages: List[RawMessage]
-    ) -> Optional[Tuple[io.BytesIO, str]]:
+    def generate_exercise_chart(cls, exercise_query: str, messages: list[RawMessage]) -> tuple[io.BytesIO, str] | None:
         """Genera un gráfico de evolución de fuerza (1RM y carga efectiva) para un ejercicio."""
         canonical_name, data = cls.parse_exercise_data(exercise_query, messages)
         if len(data) < 2:
@@ -273,7 +279,8 @@ class ChartGenerator:
         fig, ax = plt.subplots(figsize=(9, 5), dpi=140)
         try:
             cls._apply_dark_style(
-                fig, ax,
+                fig,
+                ax,
                 title=f"Progresión de Fuerza: {canonical_name}",
                 xlabel="Fecha",
                 ylabel="Kg",
@@ -281,18 +288,25 @@ class ChartGenerator:
 
             # Línea de 1RM Estimado
             ax.plot(
-                dates, e1rms,
-                marker="o", markersize=4.5,
-                color=SUCCESS_ACCENT, linewidth=2.0,
+                dates,
+                e1rms,
+                marker="o",
+                markersize=4.5,
+                color=SUCCESS_ACCENT,
+                linewidth=2.0,
                 label="1RM Estimado (Epley)",
                 alpha=0.95,
             )
 
             # Línea de Carga Efectiva
             ax.plot(
-                dates, loads,
-                marker="s", markersize=4.0,
-                color=PRIMARY_ACCENT, linewidth=1.6, linestyle="--",
+                dates,
+                loads,
+                marker="s",
+                markersize=4.0,
+                color=PRIMARY_ACCENT,
+                linewidth=1.6,
+                linestyle="--",
                 label="Carga de Trabajo (Kg)",
                 alpha=0.85,
             )
@@ -313,12 +327,14 @@ class ChartGenerator:
                 f"Carga Inicial: {loads[0]:.1f} kg  |  Carga Actual: {loads[-1]:.1f} kg"
             )
             ax.text(
-                0.03, 0.94, stats_box,
+                0.03,
+                0.94,
+                stats_box,
                 transform=ax.transAxes,
                 fontsize=8.5,
                 color=TEXT_COLOR,
                 verticalalignment="top",
-                bbox=dict(boxstyle="round,pad=0.5", facecolor=BG_COLOR, edgecolor=GRID_COLOR, alpha=0.85),
+                bbox={"boxstyle": "round,pad=0.5", "facecolor": BG_COLOR, "edgecolor": GRID_COLOR, "alpha": 0.85},
             )
 
             ax.legend(

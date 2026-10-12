@@ -1,9 +1,9 @@
 """Motor de análisis de entrenamientos y generación de contexto para GymBot."""
 
 import logging
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncGenerator, List, Optional, Tuple
 
 from config.settings import Settings, get_settings
 from storage.database import GymDatabase
@@ -29,22 +29,22 @@ class GymAnalyzer:
 
     def __init__(
         self,
-        settings: Optional[Settings] = None,
-        database: Optional[GymDatabase] = None,
-        gemini_client: Optional[GeminiClient] = None,
+        settings: Settings | None = None,
+        database: GymDatabase | None = None,
+        gemini_client: GeminiClient | None = None,
     ):
         self.settings = settings or get_settings()
         self.database = database or GymDatabase(self.settings.DATABASE_PATH)
         self.gemini_client = gemini_client or GeminiClient(self.settings)
-        self._cached_context: Optional[str] = None
+        self._cached_context: str | None = None
         self._cached_total_messages: int = -1
-        self._cached_last_sync: Optional[datetime] = None
+        self._cached_last_sync: datetime | None = None
 
     def build_workout_context(
         self,
-        since: Optional[datetime] = None,
-        until: Optional[datetime] = None,
-        limit: Optional[int] = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int | None = None,
     ) -> str:
         """Extrae y formatea el historial de entrenamientos en orden cronológico (con caché en RAM)."""
         # Si es la consulta general completa, usamos caché en memoria RAM para máxima velocidad
@@ -57,7 +57,7 @@ class GymAnalyzer:
             ):
                 return self._cached_context
 
-            messages: List[RawMessage] = self.database.get_messages(reverse=False)
+            messages: list[RawMessage] = self.database.get_messages(reverse=False)
             if not messages:
                 self._cached_context = "NO HAY REGISTROS DISPONIBLES EN LA BASE DE DATOS LOCAL."
             else:
@@ -66,7 +66,7 @@ class GymAnalyzer:
             self._cached_last_sync = stats.last_sync_at
             return self._cached_context
 
-        messages: List[RawMessage] = self.database.get_messages(
+        messages: list[RawMessage] = self.database.get_messages(
             since=since,
             until=until,
             limit=limit,
@@ -102,8 +102,8 @@ class GymAnalyzer:
     def analyze_query(
         self,
         user_question: str,
-        conversation_history: Optional[List[dict]] = None,
-        attachments: Optional[List[Tuple[bytes, str]]] = None,
+        conversation_history: list[dict] | None = None,
+        attachments: list[tuple[bytes, str]] | None = None,
     ) -> str:
         """Combina el historial local de entrenamientos, la memoria de conversación y adjuntos con la pregunta."""
         question_clean = user_question.strip()
@@ -171,8 +171,8 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
     async def analyze_query_stream_async(
         self,
         user_question: str,
-        conversation_history: Optional[List[dict]] = None,
-        attachments: Optional[List[Tuple[bytes, str]]] = None,
+        conversation_history: list[dict] | None = None,
+        attachments: list[tuple[bytes, str]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Versión en streaming asíncrono de alta velocidad para respuesta inmediata en Telegram."""
         question_clean = user_question.strip()
@@ -247,18 +247,19 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         # Obtener mensajes de hoy
         today_messages = self.database.get_messages(since=start_of_day, reverse=False)
         food_messages = [
-            m for m in today_messages
+            m
+            for m in today_messages
             if (m.chat_title and "comida" in m.chat_title.lower())
-            or any(kw in m.text.lower() for kw in ("desayuno", "almuerzo", "cena", "merienda", "snack", "comida", "gr", "kcal", "proteina"))
+            or any(
+                kw in m.text.lower()
+                for kw in ("desayuno", "almuerzo", "cena", "merienda", "snack", "comida", "gr", "kcal", "proteina")
+            )
         ]
 
         if not food_messages:
             # Fallback a los últimos 3 mensajes de comidas si hoy no hay nada aún
             recent_all = self.database.get_messages(limit=20, reverse=True)
-            food_messages = [
-                m for m in recent_all
-                if m.chat_title and "comida" in m.chat_title.lower()
-            ][:3]
+            food_messages = [m for m in recent_all if m.chat_title and "comida" in m.chat_title.lower()][:3]
             if not food_messages:
                 return "No hay registros recientes de comidas en el grupo Comidas para calcular macros."
 
