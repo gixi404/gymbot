@@ -90,6 +90,38 @@ class TestBotWhitelistAuthorization(unittest.TestCase):
         asyncio.run(GymTelegramBot._safe_edit(msg_mock, "texto *mal_formateado"))
         self.assertEqual(msg_mock.edit_text.call_count, 2)
 
+    def test_photo_and_document_whitelist_protection(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        settings = Settings(
+            TELEGRAM_API_ID=123,
+            TELEGRAM_API_HASH="abc",
+            TELEGRAM_WORKOUT_CHAT_ID=-1001,
+            TELEGRAM_BOT_TOKEN="token",
+            ALLOWED_TELEGRAM_USER_IDS="100",
+            GEMINI_API_KEY="key",
+        )
+        bot = GymTelegramBot(
+            settings=settings,
+            database=MagicMock(),
+            reader=MagicMock(),
+            analyzer=MagicMock(),
+        )
+
+        # Update con usuario no autorizado
+        unauth_update = MagicMock()
+        unauth_update.effective_user.id = 999
+        unauth_update.message.reply_text = AsyncMock()
+
+        # Ambos manejadores deben salir de inmediato sin interactuar
+        asyncio.run(bot._handle_photo(unauth_update, MagicMock()))
+        unauth_update.message.reply_text.assert_not_called()
+
+        asyncio.run(bot._handle_document(unauth_update, MagicMock()))
+        unauth_update.message.reply_text.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
+

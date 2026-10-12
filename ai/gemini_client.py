@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from google import genai
 from google.genai import types
@@ -33,15 +33,27 @@ class GeminiClient:
         self,
         prompt: str,
         system_instruction: str,
+        attachments: Optional[List[Tuple[bytes, str]]] = None,
         temperature: float = 0.2,
         max_retries: int = 3,
         base_backoff: float = 1.5,
     ) -> str:
-        """Envía una solicitud a Gemini con reintentos y fallback automático de modelos ante alta demanda."""
+        """Envía una solicitud a Gemini con reintentos, adjuntos multimodales y fallback automático."""
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=temperature,
         )
+
+        contents_payload = []
+        if attachments:
+            for file_bytes, mime_type in attachments:
+                clean_mime = (mime_type or "application/octet-stream").split(";")[0].strip().lower()
+                part = types.Part.from_bytes(data=file_bytes, mime_type=clean_mime)
+                contents_payload.append(part)
+            contents_payload.append(prompt)
+            request_contents = contents_payload
+        else:
+            request_contents = prompt
 
         # Modelos candidatos en orden de prioridad para fallback si hay congestión global (503)
         candidate_models = [self.model_name]
@@ -55,7 +67,7 @@ class GeminiClient:
                 try:
                     response = self.client.models.generate_content(
                         model=current_model,
-                        contents=prompt,
+                        contents=request_contents,
                         config=config,
                     )
                     if response and response.text:

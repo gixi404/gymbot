@@ -3,6 +3,7 @@
 import asyncio
 import html
 import logging
+import mimetypes
 from typing import Optional
 
 from telegram import Update
@@ -142,7 +143,11 @@ class GymTelegramBot:
             "• `/stats` - Muestra estadísticas de la base de datos local.\n"
             "• `/clear` - Reinicia la memoria activa de la conversación.\n"
             "• `/help` - Ayuda y ejemplos de consultas.\n\n"
-            "💬 O simplemente *escríbeme cualquier pregunta* sobre tus cargas, series, 1RM o progresiones."
+            "💬 *¿Cómo interactuar?*\n"
+            "• Escríbeme cualquier pregunta sobre tus cargas, series, 1RM o progresiones.\n"
+            "• Envíame *notas de voz o audios* para que los transcriba y analice.\n"
+            "• Adjúntame *fotos* (JPG, PNG, WEBP) de libretas, máquinas o etiquetas.\n"
+            "• Adjúntame *documentos* (PDF, TXT, CSV) con rutinas o informes corporales."
         )
 
         await self._safe_reply(update.message, welcome_text)
@@ -158,7 +163,9 @@ class GymTelegramBot:
             "• _¿Qué pesos y series hice en sentadillas la última sesión?_\n"
             "• _Calcula mi 1RM estimado en peso muerto según mis últimos registros._\n"
             "• _¿En qué ejercicios tengo notas de molestias articulares o fatiga?_\n"
-            "• _¿Cómo ha sido mi progresión en dominadas las últimas 4 semanas?_\n\n"
+            "• _¿Cómo ha sido mi progresión en dominadas las últimas 4 semanas?_\n"
+            "• 📸 _Adjuntar foto de libreta o captura de app con tu consulta._\n"
+            "• 📄 _Adjuntar PDF de rutina o informe de composición corporal._\n\n"
             "⚙️ *Comandos útiles:*\n"
             "• `/sync` - Sincroniza inmediatamente nuevos entrenamientos anotados.\n"
             "• `/clear` - Reinicia la memoria conversacional activa para iniciar una nueva charla.\n"
@@ -329,6 +336,133 @@ class GymTelegramBot:
             except Exception:
                 await message.reply_text(chunk)
 
+    async def _handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Procesa fotos enviadas por el usuario y las analiza con Gemini respetando el contexto."""
+        if not self._is_authorized(update):
+            return
+
+        message = update.message
+        if not message.photo:
+            return
+
+        await message.chat.send_action(action=ChatAction.TYPING)
+
+        try:
+            await self.reader.sync_channel()
+        except Exception as e:
+            logger.debug("Sincronización incremental previa omitida: %s", e)
+
+        # La foto con el índice -1 contiene la mayor resolución
+        photo_obj = message.photo[-1]
+        try:
+            file_obj = await context.bot.get_file(photo_obj.file_id)
+            img_bytearray = await file_obj.download_as_bytearray()
+            img_bytes = bytes(img_bytearray)
+        except Exception as e:
+            logger.error("Error al descargar foto en Telegram: %s", e)
+            await message.reply_text("❌ No se pudo descargar la imagen para su análisis.")
+            return
+
+        user_query = (message.caption or "").strip()
+        if not user_query:
+            user_query = "Analiza detalladamente esta imagen en el contexto de mis entrenamientos y directivas."
+
+        user_id = str(update.effective_user.id)
+        active_memory = self.database.get_active_memory(user_id, limit=8)
+        attachments = [(img_bytes, "image/jpeg")]
+
+        loop = asyncio.get_running_loop()
+        try:
+            response_text = await loop.run_in_executor(
+                None,
+                lambda: self.analyzer.analyze_query(
+                    user_query,
+                    conversation_history=active_memory,
+                    attachments=attachments,
+                ),
+            )
+        except Exception as e:
+            logger.error("Error analizando foto con Gemini: %s", e)
+            response_text = f"❌ Ocurrió un error al procesar tu imagen: {str(e)}"
+
+        self.database.add_conversation_message(user_id, "user", f"[Imagen adjunta] {user_query}")
+        self.database.add_conversation_message(user_id, "model", response_text)
+
+        chunks = _split_long_message(response_text)
+        for chunk in chunks:
+            try:
+                await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await message.reply_text(chunk)
+
+    async def _handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Procesa documentos (PDF, TXT, CSV, imágenes enviadas como archivo sin comprimir, etc.)."""
+        if not self._is_authorized(update):
+            return
+
+        message = update.message
+        doc = message.document
+        if not doc:
+            return
+
+        if doc.file_size and doc.file_size > 20 * 1024 * 1024:
+            await message.reply_text("❌ El archivo supera el límite de 20 MB permitido por Telegram.")
+            return
+
+        await message.chat.send_action(action=ChatAction.TYPING)
+
+        try:
+            await self.reader.sync_channel()
+        except Exception as e:
+            logger.debug("Sincronización incremental previa omitida: %s", e)
+
+        file_name = doc.file_name or "documento"
+        mime_type = doc.mime_type
+        if not mime_type or mime_type == "application/octet-stream":
+            guessed, _ = mimetypes.guess_type(file_name)
+            mime_type = guessed or "application/octet-stream"
+
+        try:
+            file_obj = await context.bot.get_file(doc.file_id)
+            doc_bytearray = await file_obj.download_as_bytearray()
+            doc_bytes = bytes(doc_bytearray)
+        except Exception as e:
+            logger.error("Error al descargar documento en Telegram: %s", e)
+            await message.reply_text(f"❌ No se pudo descargar el archivo '{file_name}'.")
+            return
+
+        user_query = (message.caption or "").strip()
+        if not user_query:
+            user_query = f"Analiza detalladamente este documento ({file_name}) en el contexto de mis entrenamientos y directivas."
+
+        user_id = str(update.effective_user.id)
+        active_memory = self.database.get_active_memory(user_id, limit=8)
+        attachments = [(doc_bytes, mime_type)]
+
+        loop = asyncio.get_running_loop()
+        try:
+            response_text = await loop.run_in_executor(
+                None,
+                lambda: self.analyzer.analyze_query(
+                    user_query,
+                    conversation_history=active_memory,
+                    attachments=attachments,
+                ),
+            )
+        except Exception as e:
+            logger.error("Error analizando documento con Gemini: %s", e)
+            response_text = f"❌ Ocurrió un error al procesar el archivo '{file_name}': {str(e)}"
+
+        self.database.add_conversation_message(user_id, "user", f"[Archivo: {file_name}] {user_query}")
+        self.database.add_conversation_message(user_id, "model", response_text)
+
+        chunks = _split_long_message(response_text)
+        for chunk in chunks:
+            try:
+                await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await message.reply_text(chunk)
+
     def build_application(self) -> Application:
         """Construye y configura la aplicación de python-telegram-bot."""
         request = HTTPXRequest(
@@ -351,6 +485,8 @@ class GymTelegramBot:
         app.add_handler(CommandHandler("clear", self._handle_clear))
         app.add_handler(CommandHandler("reset", self._handle_clear))
         app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._handle_voice_or_audio))
+        app.add_handler(MessageHandler(filters.PHOTO, self._handle_photo))
+        app.add_handler(MessageHandler(filters.Document.ALL, self._handle_document))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
 
         return app

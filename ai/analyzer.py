@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from config.settings import Settings, get_settings
 from storage.database import GymDatabase
@@ -91,28 +91,32 @@ class GymAnalyzer:
         self,
         user_question: str,
         conversation_history: Optional[List[dict]] = None,
+        attachments: Optional[List[Tuple[bytes, str]]] = None,
     ) -> str:
-        """Combina el historial local de entrenamientos y la memoria de conversación con la pregunta."""
+        """Combina el historial local de entrenamientos, la memoria de conversación y adjuntos con la pregunta."""
         question_clean = user_question.strip()
         if not question_clean:
             return "Por favor ingresa una consulta válida sobre tus entrenamientos."
 
         # Verificamos si hay registros en la base de datos
         stats = self.database.get_stats()
-        if stats.total_messages == 0:
+        if stats.total_messages == 0 and not attachments:
             return (
                 "⚠️ La base de datos local está vacía. "
                 "Ejecuta primero una sincronización (`:sync` en la CLI o `/sync` en el bot de Telegram) "
                 "para descargar tus entrenamientos desde el chat."
             )
 
-        context_text = self.build_workout_context()
-
-        stats_summary = (
-            f"Total de registros analizados: {stats.total_messages}. "
-            f"Período: {stats.first_message_date.strftime('%d/%m/%Y') if stats.first_message_date else 'N/A'} "
-            f"al {stats.last_message_date.strftime('%d/%m/%Y') if stats.last_message_date else 'N/A'}."
-        )
+        if stats.total_messages > 0:
+            context_text = self.build_workout_context()
+            stats_summary = (
+                f"Total de registros analizados: {stats.total_messages}. "
+                f"Período: {stats.first_message_date.strftime('%d/%m/%Y') if stats.first_message_date else 'N/A'} "
+                f"al {stats.last_message_date.strftime('%d/%m/%Y') if stats.last_message_date else 'N/A'}."
+            )
+        else:
+            context_text = "Sin registros históricos previos en base de datos."
+            stats_summary = "Base de datos local sin registros. Análisis centrado en el material adjunto."
 
         conversation_context = ""
         if conversation_history:
@@ -139,13 +143,14 @@ HISTORIAL CRONOLÓGICO DE SESIONES DE ENTRENAMIENTO:
 CONSULTA DEL ATLETA:
 {question_clean}
 
-INSTRUCCIÓN: Responde directamente y con precisión quirúrgica a la consulta del atleta, cumpliendo rigurosamente todas sus directivas. Si la consulta hace referencia a preguntas o respuestas anteriores de la memoria conversacional previa (ej. "¿Cuál de esos 3...?"), utilízala para responder de forma coherente y continua. No agregues tablas ni desgloses del historial a menos que la consulta lo pida explícitamente.
+INSTRUCCIÓN: Responde directamente y con precisión quirúrgica a la consulta del atleta, cumpliendo rigurosamente todas sus directivas. Si se adjuntan imágenes o documentos, analiza exhaustivamente su contenido visual y textual y relaciónalo con sus entrenamientos o plan deportivo. Si la consulta hace referencia a preguntas o respuestas anteriores de la memoria conversacional previa (ej. "¿Cuál de esos 3...?"), utilízala para responder de forma coherente y continua. No agregues tablas ni desgloses del historial a menos que la consulta lo pida explícitamente.
 """
 
         try:
             return self.gemini_client.generate_response(
                 prompt=prompt,
                 system_instruction=self.get_system_instruction(),
+                attachments=attachments,
             )
         except Exception as e:
             logger.error("Error al procesar consulta con Gemini: %s", e)

@@ -95,6 +95,22 @@ class TestGymAnalyzer(unittest.TestCase):
         self.assertEqual(result, "¿Cuál fue mi última sesión?")
         self.mock_gemini.transcribe_audio.assert_called_once_with(b"fake_audio_bytes", mime_type="audio/ogg")
 
+    def test_analyze_query_with_attachments_calls_gemini(self):
+        # Con BD vacía pero con adjuntos, sí debe procesar la consulta
+        self.mock_gemini.generate_response.return_value = "La imagen muestra una serie de 100kg en press banca."
+        attachments = [(b"image_bytes_here", "image/png")]
+
+        response = self.analyzer.analyze_query(
+            user_question="¿Qué ejercicio es este?",
+            attachments=attachments,
+        )
+
+        self.assertIn("100kg en press banca", response)
+        self.mock_gemini.generate_response.assert_called_once()
+        call_kwargs = self.mock_gemini.generate_response.call_args[1]
+        self.assertEqual(call_kwargs.get("attachments"), attachments)
+
 
 if __name__ == "__main__":
     unittest.main()
+
