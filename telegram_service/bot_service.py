@@ -5,14 +5,16 @@ import html
 import logging
 import mimetypes
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Optional
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -23,6 +25,7 @@ from ai.analyzer import GymAnalyzer
 from config.settings import Settings, get_settings
 from storage.database import GymDatabase
 from telegram_service.mtproto_reader import TelegramWorkoutReader
+from visualization.chart_generator import ChartGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,7 @@ class GymTelegramBot:
         self.database = database or GymDatabase(self.settings.DATABASE_PATH)
         self.reader = reader or TelegramWorkoutReader(self.settings, self.database)
         self.analyzer = analyzer or GymAnalyzer(self.settings, self.database)
+        self._app: Optional[Application] = None
 
         if not self.settings.TELEGRAM_BOT_TOKEN:
             raise ValueError(
@@ -115,6 +119,65 @@ class GymTelegramBot:
                 "ALLOWED_TELEGRAM_USER_IDS está vacío en .env. "
                 "¡El bot ignorará todos los mensajes hasta que agregues tu telegram_user_id!"
             )
+
+    @staticmethod
+    def _get_main_keyboard() -> InlineKeyboardMarkup:
+        """Teclado interactivo principal con accesos rápidos."""
+        buttons = [
+            [
+                InlineKeyboardButton("📈 Gráficos de Progreso", callback_data="btn_chart_menu"),
+                InlineKeyboardButton("📅 Resumen Semanal", callback_data="btn_weekly"),
+            ],
+            [
+                InlineKeyboardButton("🥗 Macros de Hoy", callback_data="btn_macros"),
+                InlineKeyboardButton("🎯 Próxima Sesión", callback_data="btn_progression_menu"),
+            ],
+            [
+                InlineKeyboardButton("📊 Estadísticas BD", callback_data="btn_stats"),
+                InlineKeyboardButton("🔄 Sincronizar", callback_data="btn_sync"),
+            ],
+            [
+                InlineKeyboardButton("💾 Exportar CSV", callback_data="btn_export"),
+                InlineKeyboardButton("🧹 Reiniciar Memoria", callback_data="btn_clear"),
+            ],
+        ]
+        return InlineKeyboardMarkup(buttons)
+
+    @staticmethod
+    def _get_chart_keyboard() -> InlineKeyboardMarkup:
+        """Teclado para seleccionar el gráfico a generar."""
+        buttons = [
+            [
+                InlineKeyboardButton("⚖️ Peso Corporal", callback_data="chart_weight"),
+                InlineKeyboardButton("🏋️ Press Banca", callback_data="chart_banca"),
+            ],
+            [
+                InlineKeyboardButton("🦵 Sentadilla", callback_data="chart_sentadilla"),
+                InlineKeyboardButton("🍑 Hip Thrust", callback_data="chart_hip_thrust"),
+            ],
+            [
+                InlineKeyboardButton("🔙 Menú Principal", callback_data="btn_main_menu"),
+            ],
+        ]
+        return InlineKeyboardMarkup(buttons)
+
+    @staticmethod
+    def _get_progression_keyboard() -> InlineKeyboardMarkup:
+        """Teclado para consultar la progresión del próximo entrenamiento."""
+        buttons = [
+            [
+                InlineKeyboardButton("Press Banca", callback_data="prog_banca"),
+                InlineKeyboardButton("Sentadilla", callback_data="prog_sentadilla"),
+            ],
+            [
+                InlineKeyboardButton("Prensa", callback_data="prog_prensa"),
+                InlineKeyboardButton("Hip Thrust", callback_data="prog_hip_thrust"),
+            ],
+            [
+                InlineKeyboardButton("🔙 Menú Principal", callback_data="btn_main_menu"),
+            ],
+        ]
+        return InlineKeyboardMarkup(buttons)
 
     def _is_authorized(self, update: Update) -> bool:
         """Verifica si el remitente está autorizado según la whitelist."""
@@ -133,20 +196,20 @@ class GymTelegramBot:
         return False
 
     @staticmethod
-    async def _safe_reply(message, text: str, parse_mode: str = ParseMode.MARKDOWN) -> None:
+    async def _safe_reply(message, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup=None) -> None:
         """Envía un mensaje intentando formato Markdown, con fallback automático a texto plano."""
         try:
-            await message.reply_text(text, parse_mode=parse_mode)
+            await message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
         except Exception:
-            await message.reply_text(text)
+            await message.reply_text(text, reply_markup=reply_markup)
 
     @staticmethod
-    async def _safe_edit(message, text: str, parse_mode: str = ParseMode.MARKDOWN) -> None:
+    async def _safe_edit(message, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup=None) -> None:
         """Edita un mensaje intentando formato Markdown, con fallback automático a texto plano."""
         try:
-            await message.edit_text(text, parse_mode=parse_mode)
+            await message.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
         except Exception:
-            await message.edit_text(text)
+            await message.edit_text(text, reply_markup=reply_markup)
 
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /start."""
@@ -159,23 +222,244 @@ class GymTelegramBot:
 
         welcome_text = (
             f"💪 *¡Hola, {user_name}! Bienvenido a GymBot*\n\n"
-            "Soy tu asistente personal de entrenamientos impulsado por Gemini 2.5 Flash.\n\n"
+            "Tu asistente inteligente de fuerza, nutrición y rendimiento físico.\n\n"
             "📊 *Estado Actual:*\n"
             f"• Registros sincronizados: `{stats.total_messages}`\n"
             f"• Última sincronización: `{stats.last_sync_at.strftime('%d/%m/%Y %H:%M') if stats.last_sync_at else 'Nunca'}`\n\n"
-            "🚀 *Comandos Disponibles:*\n"
-            "• `/sync` - Sincroniza los últimos entrenamientos desde tus chats.\n"
-            "• `/stats` - Muestra estadísticas de la base de datos local.\n"
-            "• `/clear` - Reinicia la memoria activa de la conversación.\n"
-            "• `/help` - Ayuda y ejemplos de consultas.\n\n"
-            "💬 *¿Cómo interactuar?*\n"
-            "• Escríbeme cualquier pregunta sobre tus cargas, series, 1RM o progresiones.\n"
-            "• Envíame *notas de voz o audios* para que los transcriba y analice.\n"
-            "• Adjúntame *fotos* (JPG, PNG, WEBP) de libretas, máquinas o etiquetas.\n"
-            "• Adjúntame *documentos* (PDF, TXT, CSV) con rutinas o informes corporales."
+            "⚡ *Accesos Rápidos:* Usa los botones de abajo o escribe tus comandos:\n"
+            "• `/grafico [ejercicio|peso]` - Gráfica de evolución en imagen.\n"
+            "• `/macros` - Estimación nutricional de hoy.\n"
+            "• `/proxima [ejercicio]` - Carga sugerida con doble progresión.\n"
+            "• `/semana` - Resumen semanal ejecutivo.\n"
+            "• `/export` - Descarga tu historial en archivo CSV.\n"
+            "• `/sync` | `/stats` | `/clear` | `/help`"
         )
 
-        await self._safe_reply(update.message, welcome_text)
+        await self._safe_reply(update.message, welcome_text, reply_markup=self._get_main_keyboard())
+
+    async def _handle_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /menu."""
+        if not self._is_authorized(update):
+            return
+        await self._safe_reply(
+            update.message,
+            "📋 *Menú de Acciones Rápidas:*",
+            reply_markup=self._get_main_keyboard(),
+        )
+
+    async def _handle_chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /grafico [peso | ejercicio]."""
+        if not self._is_authorized(update):
+            return
+
+        args = context.args or []
+        if not args:
+            await self._safe_reply(
+                update.message,
+                "📊 *Selecciona qué gráfico deseas generar:*",
+                reply_markup=self._get_chart_keyboard(),
+            )
+            return
+
+        query = " ".join(args).strip().lower()
+        await self._generate_and_send_chart(update.message, query)
+
+    async def _generate_and_send_chart(self, message, query: str) -> None:
+        """Genera y envía el gráfico solicitado."""
+        all_messages = self.database.get_messages(reverse=False)
+
+        if "peso" in query:
+            buf = ChartGenerator.generate_weight_chart(all_messages)
+            if not buf:
+                await self._safe_reply(
+                    message,
+                    "⚠️ No hay suficientes registros de peso para generar la gráfica (se requieren al menos 2 mediciones en PesoCorporal)."
+                )
+                return
+            await message.reply_photo(photo=buf, caption="📈 *Evolución de Peso Corporal*")
+        else:
+            res = ChartGenerator.generate_exercise_chart(query, all_messages)
+            if not res:
+                await self._safe_reply(
+                    message,
+                    f"⚠️ No se encontraron suficientes sesiones registradas para generar la gráfica de '{query}'."
+                )
+                return
+            buf, canonical = res
+            await message.reply_photo(photo=buf, caption=f"🏋️ *Progresión de Fuerza: {canonical}*")
+
+    async def _handle_macros(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /macros o /hoy."""
+        if not self._is_authorized(update):
+            return
+
+        async with _send_typing_action(update.message.chat):
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, self.analyzer.analyze_nutrition_today)
+            await self._safe_reply(update.message, result)
+
+    async def _handle_progression(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /proxima [ejercicio]."""
+        if not self._is_authorized(update):
+            return
+
+        args = context.args or []
+        if not args:
+            await self._safe_reply(
+                update.message,
+                "🎯 *Selecciona el ejercicio para calcular tu próxima carga:*",
+                reply_markup=self._get_progression_keyboard(),
+            )
+            return
+
+        ex_name = " ".join(args).strip()
+        async with _send_typing_action(update.message.chat):
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, lambda: self.analyzer.recommend_next_progression(ex_name)
+            )
+            await self._safe_reply(update.message, result)
+
+    async def _handle_weekly(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /semana o /resumen."""
+        if not self._is_authorized(update):
+            return
+
+        async with _send_typing_action(update.message.chat):
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, self.analyzer.generate_weekly_summary)
+            await self._safe_reply(update.message, result)
+
+    async def _handle_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /export o /backup."""
+        if not self._is_authorized(update):
+            return
+
+        status_msg = await update.message.reply_text("⏳ Generando archivo CSV con tu historial completo...")
+        try:
+            csv_buf = self.database.export_to_csv()
+            now_str = datetime.now().strftime("%Y%m%d_%H%M")
+            filename = f"gymbot_export_{now_str}.csv"
+            await update.message.reply_document(
+                document=csv_buf,
+                filename=filename,
+                caption="💾 *Historial exportado con éxito* (Codificación UTF-8 compatible con Excel y Hojas de Cálculo).",
+            )
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error("Error exportando datos: %s", e)
+            await status_msg.edit_text(f"❌ Error al exportar: {e}")
+
+    async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Manejador centralizado de pulsaciones de botones interactivos."""
+        query = update.callback_query
+        if not query or not query.data:
+            return
+
+        user_id = query.from_user.id
+        if user_id not in self.allowed_ids:
+            await query.answer("Acceso no autorizado", show_alert=True)
+            return
+
+        await query.answer()
+        data = query.data
+        msg = query.message
+
+        if data == "btn_main_menu":
+            await self._safe_edit(msg, "📋 *Menú de Acciones Rápidas:*", reply_markup=self._get_main_keyboard())
+        elif data == "btn_chart_menu":
+            await self._safe_edit(msg, "📊 *Selecciona qué gráfico deseas generar:*", reply_markup=self._get_chart_keyboard())
+        elif data == "btn_progression_menu":
+            await self._safe_edit(msg, "🎯 *Selecciona el ejercicio para calcular tu próxima carga:*", reply_markup=self._get_progression_keyboard())
+        elif data == "chart_weight":
+            await self._generate_and_send_chart(msg, "peso")
+        elif data == "chart_banca":
+            await self._generate_and_send_chart(msg, "banca")
+        elif data == "chart_sentadilla":
+            await self._generate_and_send_chart(msg, "sentadilla")
+        elif data == "chart_hip_thrust":
+            await self._generate_and_send_chart(msg, "hip thrust")
+        elif data.startswith("prog_"):
+            ex_name = data.replace("prog_", "").replace("_", " ")
+            async with _send_typing_action(msg.chat):
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None, lambda: self.analyzer.recommend_next_progression(ex_name)
+                )
+                await self._safe_reply(msg, result)
+        elif data == "btn_weekly":
+            async with _send_typing_action(msg.chat):
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(None, self.analyzer.generate_weekly_summary)
+                await self._safe_reply(msg, result)
+        elif data == "btn_macros":
+            async with _send_typing_action(msg.chat):
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(None, self.analyzer.analyze_nutrition_today)
+                await self._safe_reply(msg, result)
+        elif data == "btn_stats":
+            stats = self.database.get_stats(self.settings.TELEGRAM_WORKOUT_CHAT_ID)
+            stats_text = (
+                "📈 *Estadísticas de la Base de Datos:*\n\n"
+                f"• Total de mensajes registrados: `{stats.total_messages}`\n"
+                f"• Primer registro: `{stats.first_message_date.strftime('%d/%m/%Y %H:%M') if stats.first_message_date else 'N/A'}`\n"
+                f"• Último registro: `{stats.last_message_date.strftime('%d/%m/%Y %H:%M') if stats.last_message_date else 'N/A'}`\n"
+                f"• Última sincronización: `{stats.last_sync_at.strftime('%d/%m/%Y %H:%M') if stats.last_sync_at else 'Pendiente'}`"
+            )
+            await self._safe_reply(msg, stats_text)
+        elif data == "btn_sync":
+            status_msg = await msg.reply_text("🔄 Sincronizando entrenamientos desde Telegram...")
+            try:
+                new_msgs, total_msgs = await self.reader.sync_channel()
+                msg_text = (
+                    f"✅ *Sincronización exitosa*\n\n"
+                    f"• Nuevos mensajes descargados: `{new_msgs}`\n"
+                    f"• Total acumulado en base de datos: `{total_msgs}`"
+                )
+                await self._safe_edit(status_msg, msg_text)
+            except Exception as e:
+                logger.error("Error durante sincronización por botón: %s", e)
+                await status_msg.edit_text(f"❌ Error al sincronizar: {str(e)}")
+        elif data == "btn_export":
+            try:
+                csv_buf = self.database.export_to_csv()
+                now_str = datetime.now().strftime("%Y%m%d_%H%M")
+                await msg.reply_document(
+                    document=csv_buf,
+                    filename=f"gymbot_export_{now_str}.csv",
+                    caption="💾 *Historial exportado con éxito*.",
+                )
+            except Exception as e:
+                logger.error("Error exportando CSV: %s", e)
+                await msg.reply_text(f"❌ Error al exportar: {e}")
+        elif data == "btn_clear":
+            self.database.reset_active_memory(str(user_id))
+            await msg.reply_text("Memoria reiniciada")
+
+    async def send_proactive_message(self, text: str) -> None:
+        """Envía un mensaje proactivo a todos los usuarios de la whitelist."""
+        if not self._app:
+            return
+        for uid in self.allowed_ids:
+            try:
+                chunks = _split_long_message(text)
+                for chunk in chunks:
+                    try:
+                        await self._app.bot.send_message(
+                            chat_id=uid,
+                            text=chunk,
+                            parse_mode=ParseMode.MARKDOWN,
+                        )
+                    except Exception:
+                        await self._app.bot.send_message(
+                            chat_id=uid,
+                            text=chunk,
+                        )
+            except Exception as e:
+                logger.error("Error enviando mensaje proactivo a usuario %d: %s", uid, e)
 
     async def _handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /help."""
@@ -502,15 +786,31 @@ class GymTelegramBot:
         app.add_error_handler(self._error_handler)
         app.add_handler(CommandHandler("start", self._handle_start))
         app.add_handler(CommandHandler("help", self._handle_help))
+        app.add_handler(CommandHandler("menu", self._handle_menu))
         app.add_handler(CommandHandler("stats", self._handle_stats))
         app.add_handler(CommandHandler("sync", self._handle_sync))
         app.add_handler(CommandHandler("clear", self._handle_clear))
         app.add_handler(CommandHandler("reset", self._handle_clear))
+        app.add_handler(CommandHandler("grafico", self._handle_chart))
+        app.add_handler(CommandHandler("plot", self._handle_chart))
+        app.add_handler(CommandHandler("chart", self._handle_chart))
+        app.add_handler(CommandHandler("macros", self._handle_macros))
+        app.add_handler(CommandHandler("hoy", self._handle_macros))
+        app.add_handler(CommandHandler("nutricion", self._handle_macros))
+        app.add_handler(CommandHandler("proxima", self._handle_progression))
+        app.add_handler(CommandHandler("siguiente", self._handle_progression))
+        app.add_handler(CommandHandler("recomendar", self._handle_progression))
+        app.add_handler(CommandHandler("semana", self._handle_weekly))
+        app.add_handler(CommandHandler("resumen", self._handle_weekly))
+        app.add_handler(CommandHandler("export", self._handle_export))
+        app.add_handler(CommandHandler("backup", self._handle_export))
+        app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._handle_voice_or_audio))
         app.add_handler(MessageHandler(filters.PHOTO, self._handle_photo))
         app.add_handler(MessageHandler(filters.Document.ALL, self._handle_document))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
 
+        self._app = app
         return app
 
     def run(self) -> None:

@@ -5,3 +5,4 @@ python-dotenv>=1.0.0
 pydantic>=2.7.0
 pydantic-settings>=2.2.0
 rich>=13.7.0
+matplotlib>=3.8.0

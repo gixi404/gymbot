@@ -5,6 +5,7 @@ Ejecuta el bot secundario de Telegram para consultas móviles y la sincronizaci�
 """
 
 import asyncio
+from datetime import datetime
 import logging
 import shutil
 import signal
@@ -118,8 +119,31 @@ async def periodic_sync_task(reader: TelegramWorkoutReader, interval_minutes: in
             logger.warning("Advertencia en ciclo de sincronización automática: %s", e)
 
 
+async def weekly_summary_task(bot_service: GymTelegramBot, check_interval_seconds: int = 1800) -> None:
+    """Monitorea periódicamente y envía el resumen semanal proactivo los domingos a partir de las 20:00 hs."""
+    logger.info("Monitor de resumen semanal proactivo activado (domingos 20:00).")
+    last_sent_week: Optional[int] = None
+
+    while True:
+        try:
+            await asyncio.sleep(check_interval_seconds)
+            now = datetime.now()
+            iso_year, iso_week, iso_weekday = now.isocalendar()
+            # iso_weekday 7 = domingo
+            if iso_weekday == 7 and now.hour >= 20 and last_sent_week != iso_week:
+                logger.info("Generando resumen semanal proactivo de domingo...")
+                summary = bot_service.analyzer.generate_weekly_summary()
+                await bot_service.send_proactive_message(f"📢 *Resumen Semanal Proactivo*\n\n{summary}")
+                last_sent_week = iso_week
+        except asyncio.CancelledError:
+            logger.info("Monitor de resumen semanal proactivo cancelado.")
+            break
+        except Exception as e:
+            logger.warning("Error en monitor de resumen semanal proactivo: %s", e)
+
+
 async def run_services() -> None:
-    """Inicia concurrentemente el bot móvil y la tarea periódica."""
+    """Inicia concurrentemente el bot móvil y las tareas periódicas."""
     settings = get_settings()
     _seed_persistent_volume_if_needed(settings)
 
@@ -157,12 +181,14 @@ async def run_services() -> None:
     await application.updater.start_polling(drop_pending_updates=True)
     logger.info("Bot secundario de Telegram iniciado y escuchando mensajes en polling...")
 
-    # 4. Lanzamiento de sincronización periódica en background
+    # 4. Lanzamiento de sincronización periódica y resumen proactivo en background
     sync_task: Optional[asyncio.Task] = None
     if settings.AUTO_SYNC_INTERVAL_MINUTES > 0:
         sync_task = asyncio.create_task(
             periodic_sync_task(reader, settings.AUTO_SYNC_INTERVAL_MINUTES)
         )
+
+    weekly_task = asyncio.create_task(weekly_summary_task(bot_service))
 
     # 5. Espera hasta señal de terminación (SIGINT/SIGTERM)
     stop_event = asyncio.Event()
@@ -172,7 +198,6 @@ async def run_services() -> None:
         try:
             loop.add_signal_handler(sig, stop_event.set)
         except NotImplementedError:
-            # En caso de entornos que no soporten add_signal_handler
             pass
 
     try:
@@ -183,6 +208,13 @@ async def run_services() -> None:
             sync_task.cancel()
             try:
                 await sync_task
+            except asyncio.CancelledError:
+                pass
+
+        if weekly_task:
+            weekly_task.cancel()
+            try:
+                await weekly_task
             except asyncio.CancelledError:
                 pass
 

@@ -162,3 +162,124 @@ INSTRUCCIÓN: Responde de forma concisa, fluida y profesional a la consulta del 
     def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
         """Transcribe un archivo o nota de voz de audio a texto utilizando Gemini."""
         return self.gemini_client.transcribe_audio(audio_bytes, mime_type=mime_type)
+
+    def analyze_nutrition_today(self) -> str:
+        """Calcula el balance calórico y macronutrientes estimados de las comidas registradas hoy."""
+        now = datetime.now()
+        start_of_day = datetime(now.year, now.month, now.day, 0, 0, 0)
+
+        # Obtener mensajes de hoy
+        today_messages = self.database.get_messages(since=start_of_day, reverse=False)
+        food_messages = [
+            m for m in today_messages
+            if (m.chat_title and "comida" in m.chat_title.lower())
+            or any(kw in m.text.lower() for kw in ("desayuno", "almuerzo", "cena", "merienda", "snack", "comida", "gr", "kcal", "proteina"))
+        ]
+
+        if not food_messages:
+            # Fallback a los últimos 3 mensajes de comidas si hoy no hay nada aún
+            recent_all = self.database.get_messages(limit=20, reverse=True)
+            food_messages = [
+                m for m in recent_all
+                if m.chat_title and "comida" in m.chat_title.lower()
+            ][:3]
+            if not food_messages:
+                return "No hay registros recientes de comidas en el grupo Comidas para calcular macros."
+
+        food_text = "\n".join(m.to_summary_line() for m in food_messages)
+
+        prompt = f"""
+REGISTROS DE COMIDAS A ANALIZAR:
+================================
+{food_text}
+================================
+
+INSTRUCCIÓN:
+Como nutricionista deportivo, analiza las comidas registradas y devuelve un desglose claro:
+1. Estimación calórica total aproximada (kcal).
+2. Macronutrientes aproximados: Proteínas (g), Carbohidratos (g), Grasas (g).
+3. Breve evaluación (1-2 oraciones) indicando si se alinea con la meta del atleta (hipertrofia, superávit leve o mantenimiento, sin déficit calórico).
+Mantén el formato conciso, limpio y profesional.
+"""
+        try:
+            return self.gemini_client.generate_response(
+                prompt=prompt,
+                system_instruction=self.get_system_instruction(),
+            )
+        except Exception as e:
+            logger.error("Error al analizar nutrición con Gemini: %s", e)
+            return f"❌ Error al estimar nutrición: {e}"
+
+    def recommend_next_progression(self, exercise_name: str) -> str:
+        """Recomienda la carga y repeticiones para la próxima sesión aplicando doble progresión."""
+        ex_query = exercise_name.strip()
+        if not ex_query:
+            return "Indica el ejercicio que deseas consultar (por ejemplo: /proxima banca o /proxima sentadilla)."
+
+        # Buscar mensajes que contengan el ejercicio
+        matched = self.database.search_messages(ex_query, limit=10)
+        if not matched:
+            return f"No se encontraron registros previos para '{ex_query}' en tu historial."
+
+        history_lines = [m.to_summary_line() for m in matched[:5]]
+        history_text = "\n".join(reversed(history_lines))
+
+        prompt = f"""
+EJERCICIO A CONSULTAR: {ex_query}
+
+ÚLTIMAS SESIONES REGISTRADAS PARA ESTE EJERCICIO:
+=================================================
+{history_text}
+=================================================
+
+INSTRUCCIÓN:
+Aplica la regla de DOBLE PROGRESIÓN del atleta (rango de hipertrofia/fuerza, técnica estricta sin trampas):
+1. Identifica las cargas y repeticiones completadas en la última sesión para este ejercicio.
+2. Si el atleta completó el tope de repeticiones objetivo en todas sus series efectivas (ej. 3x8 o 3x10), indica el incremento de carga sugerido (ej. +1 a 2.5 kg) y las repeticiones base para la próxima sesión (ej. 3x6).
+3. Si no completó el tope de repeticiones, recomienda mantener el mismo peso y buscar añadir 1-2 repeticiones totales.
+Responde de forma concisa y directa en 1 a 3 oraciones completas y motivantes.
+"""
+        try:
+            return self.gemini_client.generate_response(
+                prompt=prompt,
+                system_instruction=self.get_system_instruction(),
+            )
+        except Exception as e:
+            logger.error("Error al sugerir progresión con Gemini: %s", e)
+            return f"❌ Error al consultar la sugerencia de progresión: {e}"
+
+    def generate_weekly_summary(self) -> str:
+        """Genera un reporte ejecutivo semanal de los últimos 7 días."""
+        now = datetime.now()
+        # Obtener los últimos 7 días de registros
+        since_date = datetime.fromtimestamp(now.timestamp() - 7 * 86400)
+        messages = self.database.get_messages(since=since_date, reverse=False)
+
+        if not messages:
+            return "No se registraron entrenamientos ni pesajes en los últimos 7 días para generar el resumen semanal."
+
+        context_lines = [m.to_summary_line() for m in messages]
+        context_text = "\n".join(context_lines)
+
+        prompt = f"""
+HISTORIAL DE LOS ÚLTIMOS 7 DÍAS:
+================================
+{context_text}
+================================
+
+INSTRUCCIÓN:
+Elabora el RESUMEN SEMANAL EJECUTIVO para el atleta:
+1. Días y sesiones completadas vs el plan objetivo (Fullbody 3 días L-M-V, Cardio 2 días M-S en Zona 2).
+2. Mejores levantamientos o récords de sobrecarga progresiva alcanzados esta semana.
+3. Tendencia o promedio del peso corporal si hubo pesajes registrados.
+4. Cumplimiento nutricional si hubo notas en comidas.
+Estructura la respuesta de manera clara, concisa y profesional (3 a 5 párrafos cortos con viñetas limpias), sin saludos, sin despedidas y sin emojis en exceso.
+"""
+        try:
+            return self.gemini_client.generate_response(
+                prompt=prompt,
+                system_instruction=self.get_system_instruction(),
+            )
+        except Exception as e:
+            logger.error("Error al generar resumen semanal con Gemini: %s", e)
+            return f"❌ Error al generar resumen semanal: {e}"

@@ -1,5 +1,7 @@
 """Gestión de la base de datos local SQLite con modo WAL para GymBot."""
 
+import csv
+import io
 import logging
 import sqlite3
 from contextlib import contextmanager
@@ -443,3 +445,27 @@ class GymDatabase:
             new_id,
         )
         return new_id
+
+    def export_to_csv(self) -> io.BytesIO:
+        """Exporta todos los mensajes registrados a un buffer CSV con codificación UTF-8-SIG."""
+        messages = self.get_messages(reverse=False)
+
+        string_buffer = io.StringIO()
+        writer = csv.writer(string_buffer, quoting=csv.QUOTE_MINIMAL)
+
+        # Encabezados
+        writer.writerow(["ID", "Fecha_UTC", "Origen", "Texto", "Tipo_Media", "Fecha_Edicion"])
+
+        for msg in messages:
+            writer.writerow([
+                msg.id,
+                msg.date.strftime("%Y-%m-%d %H:%M:%S"),
+                msg.chat_title or msg.chat_id or "",
+                msg.text,
+                msg.media_type or "",
+                msg.edit_date.strftime("%Y-%m-%d %H:%M:%S") if msg.edit_date else "",
+            ])
+
+        bytes_buffer = io.BytesIO(string_buffer.getvalue().encode("utf-8-sig"))
+        bytes_buffer.seek(0)
+        return bytes_buffer
