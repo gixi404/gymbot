@@ -250,7 +250,7 @@ class GymTelegramBot:
             f"• Última sincronización: `{stats.last_sync_at.strftime('%d/%m/%Y %H:%M') if stats.last_sync_at else 'Nunca'}`\n\n"
             "⚡ *Accesos Rápidos:* Usa los botones de abajo o escribe tus comandos:\n"
             "• `/grafico [ejercicio|peso]` - Gráfica de evolución en imagen.\n"
-            "• `/macros` - Estimación nutricional de hoy.\n"
+            "• `/macros [fecha]` - Macros y calorías de hoy o de una fecha (ej. `12/10/2026`).\n"
             "• `/proxima [ejercicio]` - Carga sugerida con doble progresión.\n"
             "• `/semana` - Resumen semanal ejecutivo.\n"
             "• `/export` - Descarga tu historial en archivo CSV.\n"
@@ -311,13 +311,19 @@ class GymTelegramBot:
             await self._safe_reply_photo(message, photo=buf, caption=f"🏋️ *Progresión de Fuerza: {canonical}*")
 
     async def _handle_macros(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /macros o /hoy."""
+        """Comando /macros [fecha] — sin argumento analiza hoy; con argumento analiza la fecha indicada."""
         if not self._is_authorized(update):
             return
 
+        args = context.args or []
+        date_arg = " ".join(args).strip() if args else None
+
         async with _send_typing_action(update.message.chat):
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, self.analyzer.analyze_nutrition_today)
+            if date_arg:
+                result = await loop.run_in_executor(None, lambda: self.analyzer.analyze_nutrition_by_date(date_arg))
+            else:
+                result = await loop.run_in_executor(None, self.analyzer.analyze_nutrition_today)
             await self._safe_reply(update.message, result)
 
     async def _handle_progression(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -502,6 +508,9 @@ class GymTelegramBot:
             "• 📸 _Adjuntar foto de libreta o captura de app con tu consulta._\n"
             "• 📄 _Adjuntar PDF de rutina o informe de composición corporal._\n\n"
             "⚙️ *Comandos útiles:*\n"
+            "• `/macros` - Macros y calorías de hoy.\n"
+            "• `/macros 12/10/2026` - Macros de una fecha específica.\n"
+            "• `/macros ayer` - Macros del día anterior.\n"
             "• `/sync` - Sincroniza inmediatamente nuevos entrenamientos anotados.\n"
             "• `/clear` - Reinicia la memoria conversacional activa para iniciar una nueva charla.\n"
             "• `/stats` - Consulta el volumen de registros guardados y fechas."

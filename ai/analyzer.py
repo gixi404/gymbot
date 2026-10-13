@@ -241,14 +241,64 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
 
     def analyze_nutrition_today(self) -> str:
         """Calcula el balance calórico y macronutrientes estimados de las comidas registradas hoy."""
-        now = datetime.now()
-        start_of_day = datetime(now.year, now.month, now.day, 0, 0, 0)
+        return self._analyze_nutrition_for_date(datetime.now())
 
-        # Obtener mensajes de hoy
-        today_messages = self.database.get_messages(since=start_of_day, reverse=False)
+    def analyze_nutrition_by_date(self, date_str: str) -> str:
+        """Calcula el balance calórico y macronutrientes estimados de las comidas de una fecha dada.
+
+        Args:
+            date_str: Fecha en formatos DD/MM/YYYY, DD-MM-YYYY, DD/MM/YY, DD-MM o DD/MM.
+                      También acepta 'hoy' o 'ayer'.
+        """
+        date_str = date_str.strip().lower()
+
+        if date_str in ("hoy", "today"):
+            target_date = datetime.now()
+        elif date_str in ("ayer", "yesterday"):
+            from datetime import timedelta
+
+            target_date = datetime.now() - timedelta(days=1)
+        else:
+            # Intentar parsear varios formatos comunes
+            parsed = None
+            now = datetime.now()
+            formats = [
+                "%d/%m/%Y",
+                "%d-%m-%Y",
+                "%d/%m/%y",
+                "%d-%m-%y",
+                "%d/%m",
+                "%d-%m",
+            ]
+            for fmt in formats:
+                try:
+                    parsed = datetime.strptime(date_str, fmt)
+                    # Si el formato no incluye año, asignamos el año actual
+                    if fmt in ("%d/%m", "%d-%m"):
+                        parsed = parsed.replace(year=now.year)
+                    break
+                except ValueError:
+                    continue
+
+            if parsed is None:
+                return (
+                    f"⚠️ No pude interpretar la fecha '{date_str}'. "
+                    "Usa el formato DD/MM/YYYY, DD/MM o palabras como 'hoy' o 'ayer'."
+                )
+            target_date = parsed
+
+        return self._analyze_nutrition_for_date(target_date)
+
+    def _analyze_nutrition_for_date(self, target_date: datetime) -> str:
+        """Lógica común de análisis nutricional para una fecha concreta."""
+        start_of_day = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0)
+        end_of_day = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59)
+        date_label = target_date.strftime("%d/%m/%Y")
+
+        day_messages = self.database.get_messages(since=start_of_day, until=end_of_day, reverse=False)
         food_messages = [
             m
-            for m in today_messages
+            for m in day_messages
             if (m.chat_title and "comida" in m.chat_title.lower())
             or any(
                 kw in m.text.lower()
@@ -257,26 +307,24 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         ]
 
         if not food_messages:
-            # Fallback a los últimos 3 mensajes de comidas si hoy no hay nada aún
-            recent_all = self.database.get_messages(limit=20, reverse=True)
-            food_messages = [m for m in recent_all if m.chat_title and "comida" in m.chat_title.lower()][:3]
-            if not food_messages:
-                return "No hay registros recientes de comidas en el grupo Comidas para calcular macros."
+            return f"No hay registros de comidas para el {date_label} en tu historial."
 
         food_text = "\n".join(m.to_summary_line() for m in food_messages)
 
         prompt = f"""
+FECHA ANALIZADA: {date_label}
+
 REGISTROS DE COMIDAS A ANALIZAR:
 ================================
 {food_text}
 ================================
 
 INSTRUCCIÓN:
-Como nutricionista deportivo, analiza las comidas registradas y devuelve un desglose claro:
+Como nutricionista deportivo, analiza las comidas registradas el {date_label} y entrega:
 1. Estimación calórica total aproximada (kcal).
 2. Macronutrientes aproximados: Proteínas (g), Carbohidratos (g), Grasas (g).
-3. Breve evaluación (1-2 oraciones) indicando si se alinea con la meta del atleta (hipertrofia, superávit leve o mantenimiento, sin déficit calórico).
-Mantén el formato conciso, limpio y profesional.
+3. Evaluación breve (2-3 oraciones) sobre si ese día se alineó con la meta del atleta (hipertrofia, superávit leve o mantenimiento). Menciona puntos fuertes y áreas a mejorar si las hubiera.
+Formato conciso, limpio y profesional. Usa las proporciones y pesos mencionados en los registros; si no están exactos, estima con valores estándar para porciones comunes.
 """
         try:
             return self.gemini_client.generate_response(
