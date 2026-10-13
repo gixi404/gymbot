@@ -54,8 +54,9 @@ class GeminiClient:
             request_contents = prompt
 
         # Modelos candidatos en orden de prioridad para fallback si hay congestión global (503)
+        # Todos verificados como disponibles en la API actual (octubre 2026)
         candidate_models = [self.model_name]
-        for fallback in ("gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"):
+        for fallback in ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"):
             if fallback not in candidate_models:
                 candidate_models.append(fallback)
 
@@ -132,7 +133,7 @@ class GeminiClient:
         )
 
         candidate_models = [self.model_name]
-        for fallback in ("gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"):
+        for fallback in ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"):
             if fallback not in candidate_models:
                 candidate_models.append(fallback)
 
@@ -202,7 +203,7 @@ class GeminiClient:
             request_contents = prompt
 
         candidate_models = [self.model_name]
-        for fallback in ("gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"):
+        for fallback in ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"):
             if fallback not in candidate_models:
                 candidate_models.append(fallback)
 
