@@ -23,6 +23,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("gymbot.service")
 
+# httpx logs full request URLs at INFO; Telegram's bot token is embedded in the URL.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 async def periodic_sync_task(reader: TelegramWorkoutReader, interval_minutes: int) -> None:
     """Background task to synchronize periodically in a passive way."""
