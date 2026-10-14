@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interfaz de línea de comandos (CLI) interactiva y de paso de argumentos para GymBot."""
+"""Interactive command-line interface (CLI) and argument-passing interface for GymBot."""
 
 import argparse
 import asyncio
@@ -20,7 +20,7 @@ console = Console()
 
 
 def display_welcome_banner(database: GymDatabase) -> None:
-    """Muestra el banner inicial con estadísticas locales en la CLI."""
+    """Displays the initial banner with local statistics in the CLI."""
     stats = database.get_stats()
     stats_table = Table.grid(padding=(0, 2))
     stats_table.add_column(style="bold yellow")
@@ -47,7 +47,7 @@ def display_welcome_banner(database: GymDatabase) -> None:
 
 
 def display_help() -> None:
-    """Imprime el listado de comandos y ejemplos de uso en la CLI."""
+    """Prints the list of commands and usage examples in the CLI."""
     table = Table(title="Comandos Disponibles en la CLI", border_style="cyan")
     table.add_column("Comando", style="bold yellow")
     table.add_column("Descripción", style="white")
@@ -63,7 +63,7 @@ def display_help() -> None:
 
 
 async def perform_sync(reader: TelegramWorkoutReader) -> None:
-    """Ejecuta la sincronización con MTProto mostrando un spinner visual."""
+    """Runs the MTProto synchronization showing a visual spinner."""
     with console.status("[bold cyan]Sincronizando entrenamientos desde Telegram MTProto...", spinner="dots"):
         try:
             new_msgs, total_msgs = await reader.sync_channel()
@@ -77,7 +77,7 @@ async def perform_sync(reader: TelegramWorkoutReader) -> None:
 
 
 def display_stats(database: GymDatabase) -> None:
-    """Muestra una tabla detallada con estadísticas de la base de datos."""
+    """Displays a detailed table with database statistics."""
     stats = database.get_stats()
     table = Table(title="📊 Estadísticas Locales de Entrenamientos", border_style="green")
     table.add_column("Métrica", style="bold yellow")
@@ -105,7 +105,7 @@ def process_query(
     reader: TelegramWorkoutReader | None = None,
     database: GymDatabase | None = None,
 ) -> None:
-    """Envía la pregunta al analizador de IA y presenta la respuesta formateada."""
+    """Sends the question to the AI analyzer and presents the formatted response."""
     with console.status("Pensando...", spinner="dots"):
         if reader:
             try:
@@ -129,7 +129,7 @@ def process_query(
 
 
 async def interactive_mode(database: GymDatabase, reader: TelegramWorkoutReader, analyzer: GymAnalyzer) -> None:
-    """Bucle principal de la terminal interactiva."""
+    """Main loop of the interactive terminal."""
     display_welcome_banner(database)
 
     while True:
@@ -193,7 +193,7 @@ def main() -> None:
         console.print("[yellow]Verifica que el archivo .env esté configurado correctamente.[/yellow]")
         sys.exit(1)
 
-    # Modo paso de comandos directos por flags
+    # Direct-command passing mode via flags
     if args.sync:
         asyncio.run(perform_sync(reader))
         return
@@ -202,7 +202,7 @@ def main() -> None:
         display_stats(database)
         return
 
-    # Modo argumento directo (ej. python cli.py "¿Cuál fue mi mejor press de banca?")
+    # Direct-argument mode (e.g. python cli.py "What was my best bench press?")
     if args.query:
         query_text = " ".join(args.query).strip()
         if query_text.lower() in (":sync", "sync"):
@@ -215,7 +215,7 @@ def main() -> None:
             process_query(analyzer, query_text, reader, database)
         return
 
-    # Modo interactivo si no se pasaron argumentos
+    # Interactive mode if no arguments were passed
     asyncio.run(interactive_mode(database, reader, analyzer))
 
 

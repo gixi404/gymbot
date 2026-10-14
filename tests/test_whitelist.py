@@ -1,4 +1,4 @@
-"""Pruebas unitarias de autorización por whitelist para el bot secundario."""
+"""Unit tests for whitelist authorization for the secondary bot."""
 
 import unittest
 from unittest.mock import MagicMock
@@ -9,7 +9,7 @@ from telegram_service.bot_service import GymTelegramBot
 
 class TestBotWhitelistAuthorization(unittest.TestCase):
     def test_settings_allowed_user_ids_parsing(self):
-        # Caso 1: string separado por comas
+        # Case 1: comma-separated string
         s1 = Settings(
             TELEGRAM_API_ID=123,
             TELEGRAM_API_HASH="abc",
@@ -22,7 +22,7 @@ class TestBotWhitelistAuthorization(unittest.TestCase):
         self.assertTrue(s1.is_user_allowed(22222))
         self.assertFalse(s1.is_user_allowed(99999))
 
-        # Caso 2: entero individual
+        # Case 2: single integer
         s2 = Settings(
             TELEGRAM_API_ID=123,
             TELEGRAM_API_HASH="abc",
@@ -50,17 +50,17 @@ class TestBotWhitelistAuthorization(unittest.TestCase):
             analyzer=MagicMock(),
         )
 
-        # Usuario permitido
+        # Allowed user
         update_allowed = MagicMock()
         update_allowed.effective_user.id = 100
         self.assertTrue(bot._is_authorized(update_allowed))
 
-        # Usuario no permitido (atacante o tercero)
+        # Disallowed user (attacker or third party)
         update_denied = MagicMock()
         update_denied.effective_user.id = 999
         self.assertFalse(bot._is_authorized(update_denied))
 
-        # Update sin usuario
+        # Update without user
         update_none = MagicMock()
         update_none.effective_user = None
         self.assertFalse(bot._is_authorized(update_none))
@@ -70,12 +70,12 @@ class TestBotWhitelistAuthorization(unittest.TestCase):
         from unittest.mock import AsyncMock
 
         msg_mock = AsyncMock()
-        # Primer llamado falla con error de markdown, segundo tiene éxito
+        # First call fails with markdown error, second succeeds
         msg_mock.reply_text.side_effect = [Exception("Bad Request: can't parse entities"), None]
 
         asyncio.run(GymTelegramBot._safe_reply(msg_mock, "texto *mal_formateado"))
         self.assertEqual(msg_mock.reply_text.call_count, 2)
-        # El segundo llamado debe ser sin parse_mode (texto plano)
+        # Second call must be without parse_mode (plain text)
         call_args = msg_mock.reply_text.call_args_list[1]
         self.assertEqual(call_args[0][0], "texto *mal_formateado")
         self.assertNotIn("parse_mode", call_args[1])
@@ -109,12 +109,12 @@ class TestBotWhitelistAuthorization(unittest.TestCase):
             analyzer=MagicMock(),
         )
 
-        # Update con usuario no autorizado
+        # Update with unauthorized user
         unauth_update = MagicMock()
         unauth_update.effective_user.id = 999
         unauth_update.message.reply_text = AsyncMock()
 
-        # Ambos manejadores deben salir de inmediato sin interactuar
+        # Both handlers must exit immediately without interacting
         asyncio.run(bot._handle_photo(unauth_update, MagicMock()))
         unauth_update.message.reply_text.assert_not_called()
 

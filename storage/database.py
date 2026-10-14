@@ -1,4 +1,4 @@
-"""Gestión de la base de datos local SQLite con modo WAL para GymBot."""
+"""Management of the local SQLite database with WAL mode for GymBot."""
 
 import csv
 import io
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def _unaccent(value: str | None) -> str | None:
-    """Quita diacríticos para búsquedas insensibles a tildes ('jalon' == 'Jalón')."""
+    """Removes diacritics for accent-insensitive searches ('jalon' == 'Jalón')."""
     if value is None:
         return None
     decomposed = unicodedata.normalize("NFD", str(value))
@@ -24,7 +24,7 @@ def _unaccent(value: str | None) -> str | None:
 
 
 class GymDatabase:
-    """Manejador de base de datos SQLite optimizado para concurrencia."""
+    """SQLite database handler optimized for concurrency."""
 
     def __init__(self, db_path: str | Path = "gymbot.db"):
         self.db_path = Path(db_path)
@@ -33,7 +33,7 @@ class GymDatabase:
 
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
-        """Abre y configura una conexión SQLite con soporte concurrente WAL."""
+        """Opens and configures a SQLite connection with concurrent WAL support."""
         conn = sqlite3.connect(
             str(self.db_path),
             timeout=30.0,
@@ -42,7 +42,7 @@ class GymDatabase:
         conn.row_factory = sqlite3.Row
         conn.create_function("unaccent", 1, _unaccent, deterministic=True)
         try:
-            # Optimizaciones de rendimiento y concurrencia por conexión
+            # Per-connection performance and concurrency optimizations
             conn.execute("PRAGMA synchronous = NORMAL;")
             conn.execute("PRAGMA foreign_keys = ON;")
             conn.execute("PRAGMA busy_timeout = 30000;")
@@ -55,7 +55,7 @@ class GymDatabase:
             conn.close()
 
     def init_db(self) -> None:
-        """Inicializa las tablas e índices si no existen."""
+        """Initializes tables and indexes if they do not exist."""
         with self.get_connection() as conn:
             conn.execute("PRAGMA journal_mode = WAL;")
             conn.execute(
@@ -73,8 +73,8 @@ class GymDatabase:
                 );
                 """
             )
-            # Migración automática si la tabla fue creada con id como única clave primaria
-            # o si le faltan las columnas chat_id o chat_title
+            # Automatic migration if the table was created with id as the sole primary key
+            # or if it is missing the chat_id or chat_title columns
             cursor = conn.execute("PRAGMA table_info(raw_messages);")
             table_info = cursor.fetchall()
             col_names = [r["name"] for r in table_info]
@@ -121,7 +121,7 @@ class GymDatabase:
                 ON raw_messages (date ASC);
                 """
             )
-            # Índices compuestos para filtros por grupo + rango temporal + orden
+            # Composite indexes for group + time range + order filters
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_raw_messages_chat_title_date
@@ -171,12 +171,12 @@ class GymDatabase:
                 );
                 """
             )
-        logger.debug("Base de datos SQLite inicializada en: %s", self.db_path)
+        logger.debug("SQLite database initialized at: %s", self.db_path)
 
     def upsert_messages(self, messages: list[RawMessage]) -> int:
-        """Inserta o actualiza mensajes de forma idempotente con soporte multi-chat.
+        """Inserts or updates messages idempotently with multi-chat support.
 
-        Retorna la cantidad de mensajes procesados.
+        Returns the number of processed messages.
         """
         if not messages:
             return 0
@@ -212,7 +212,7 @@ class GymDatabase:
         return len(messages)
 
     def get_last_synced_id(self, channel_id: str | int) -> int:
-        """Obtiene el ID del último mensaje sincronizado para el chat."""
+        """Gets the ID of the last synchronized message for the chat."""
         cid = str(channel_id)
         with self.get_connection() as conn:
             cursor = conn.execute(
@@ -223,7 +223,7 @@ class GymDatabase:
             if row:
                 return int(row["last_message_id"])
 
-            # Fallback: consultar el ID máximo en raw_messages para este chat si no hay metadata previa
+            # Fallback: query the max ID in raw_messages for this chat if there is no prior metadata
             cursor = conn.execute(
                 "SELECT MAX(id) as max_id FROM raw_messages WHERE chat_id = ?;",
                 (cid,),
@@ -237,7 +237,7 @@ class GymDatabase:
         last_message_id: int,
         total_messages: int | None = None,
     ) -> None:
-        """Actualiza el cursor de sincronización para el canal."""
+        """Updates the synchronization cursor for the channel."""
         cid = str(channel_id)
         now_iso = datetime.now(UTC).isoformat()
 
@@ -258,7 +258,7 @@ class GymDatabase:
 
     @staticmethod
     def _group_filter_clause(titles: list[str] | None, chat_ids: list[str] | None) -> tuple[list[str], list[str]]:
-        """Cláusulas SQL (OR entre título y chat_id) para filtrar por grupos lógicos."""
+        """SQL clauses (OR between title and chat_id) to filter by logical groups."""
         clauses: list[str] = []
         params: list[str] = []
         if titles:
@@ -273,7 +273,7 @@ class GymDatabase:
 
     @staticmethod
     def _row_to_raw_message(row: sqlite3.Row) -> RawMessage:
-        """Mapea una fila de base de datos a una instancia de RawMessage."""
+        """Maps a database row to a RawMessage instance."""
         col_names = row.keys()
         return RawMessage(
             id=row["id"],
@@ -295,10 +295,10 @@ class GymDatabase:
         titles: list[str] | None = None,
         chat_ids: list[str] | None = None,
     ) -> list[RawMessage]:
-        """Obtiene los mensajes registrados ordenados por fecha.
+        """Gets the recorded messages ordered by date.
 
-        Por defecto, reverse=False devuelve los mensajes en orden cronológico (más antiguo a más reciente).
-        `titles`/`chat_ids` restringen a grupos lógicos concretos (ver ai.router.resolve_group_targets).
+        By default, reverse=False returns messages in chronological order (oldest to newest).
+        `titles`/`chat_ids` restrict to specific logical groups (see ai.router.resolve_group_targets).
         """
         conditions = []
         params = []
@@ -335,7 +335,7 @@ class GymDatabase:
         return results
 
     def get_stats(self, channel_id: str | int | None = None) -> DatabaseStats:
-        """Recupera estadísticas de la base de datos local."""
+        """Retrieves statistics from the local database."""
         with self.get_connection() as conn:
             cursor = conn.execute(
                 """
@@ -385,9 +385,9 @@ class GymDatabase:
             )
 
     def search_messages(self, query_term: str, limit: int = 50) -> list[RawMessage]:
-        """Búsqueda simple por palabra clave dentro del texto de entrenamientos.
+        """Simple keyword search within workout text.
 
-        Insensible a tildes y mayúsculas: 'jalon' encuentra 'Jalón'.
+        Accent- and case-insensitive: 'jalon' finds 'Jalón'.
         """
         query = """
         SELECT id, chat_id, chat_title, date, text, edit_date, media_type, created_at
@@ -405,7 +405,7 @@ class GymDatabase:
         return results
 
     def get_current_session_id(self, user_id: str) -> int:
-        """Obtiene el identificador de sesión de memoria activa para el usuario."""
+        """Gets the active memory session identifier for the user."""
         with self.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT current_session_id FROM user_session_state WHERE user_id = ?;",
@@ -421,7 +421,7 @@ class GymDatabase:
             return 1
 
     def add_conversation_message(self, user_id: str, role: str, content: str) -> None:
-        """Registra un mensaje en el historial persistente asociado a la sesión de memoria activa."""
+        """Records a message in the persistent history associated with the active memory session."""
         session_id = self.get_current_session_id(user_id)
         with self.get_connection() as conn:
             conn.execute(
@@ -433,7 +433,7 @@ class GymDatabase:
             )
 
     def get_active_memory(self, user_id: str, limit: int = 10) -> list[dict]:
-        """Obtiene los últimos mensajes de la sesión activa para proveer contexto de memoria al modelo."""
+        """Gets the latest messages from the active session to provide memory context to the model."""
         session_id = self.get_current_session_id(user_id)
         with self.get_connection() as conn:
             cursor = conn.execute(
@@ -450,11 +450,11 @@ class GymDatabase:
             return [{"role": r["role"], "text": r["content"]} for r in reversed(rows)]
 
     def reset_active_memory(self, user_id: str) -> int:
-        """Reinicia la memoria activa: incrementa el session_id y borra los mensajes del usuario.
+        """Resets the active memory: increments the session_id and deletes the user's messages.
 
-        Se eliminan los mensajes de `conversation_messages` para que la tabla no
-        acumule basura indefinidamente con el paso de los meses.
-        Retorna el nuevo session_id.
+        The messages in `conversation_messages` are deleted so the table does not
+        accumulate garbage indefinitely over the months.
+        Returns the new session_id.
         """
         current_id = self.get_current_session_id(user_id)
         new_id = current_id + 1
@@ -474,7 +474,7 @@ class GymDatabase:
                 (str(user_id),),
             )
         logger.info(
-            "Memoria de sesión reiniciada para usuario '%s': sesión %d -> %d (mensajes borrados)",
+            "Session memory reset for user '%s': session %d -> %d (messages deleted)",
             user_id,
             current_id,
             new_id,
@@ -482,13 +482,13 @@ class GymDatabase:
         return new_id
 
     def export_to_csv(self) -> io.BytesIO:
-        """Exporta todos los mensajes registrados a un buffer CSV con codificación UTF-8-SIG."""
+        """Exports all recorded messages to a CSV buffer with UTF-8-SIG encoding."""
         messages = self.get_messages(reverse=False)
 
         string_buffer = io.StringIO()
         writer = csv.writer(string_buffer, quoting=csv.QUOTE_MINIMAL)
 
-        # Encabezados
+        # Headers
         writer.writerow(["ID", "Fecha_UTC", "Origen", "Texto", "Tipo_Media", "Fecha_Edicion"])
 
         for msg in messages:

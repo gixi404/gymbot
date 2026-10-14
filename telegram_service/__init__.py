@@ -1,4 +1,4 @@
-"""Módulo de integración con Telegram (MTProto y Bot API)."""
+"""Telegram integration module (MTProto and Bot API)."""
 
 from .bot_service import GymTelegramBot
 from .mtproto_reader import TelegramWorkoutReader

@@ -1,4 +1,4 @@
-"""Pruebas de seguridad que verifican el cumplimiento del requisito estricto de solo lectura."""
+"""Security tests that verify strict read-only compliance requirement."""
 
 import inspect
 import unittest
@@ -8,7 +8,7 @@ from telegram_service.mtproto_reader import TelegramWorkoutReader
 
 class TestMTProtoReadOnlySafety(unittest.TestCase):
     def test_no_write_methods_in_reader(self):
-        """Verifica que el lector MTProto no defina métodos de escritura o modificación."""
+        """Verifies that the MTProto reader does not define write or modification methods."""
         forbidden_method_substrings = [
             "send",
             "post",
@@ -26,14 +26,14 @@ class TestMTProtoReadOnlySafety(unittest.TestCase):
 
         for method_name in method_names:
             for forbidden in forbidden_method_substrings:
-                # Permitir métodos internos seguros si existieran, pero ningún método público de envío
+                # Allow safe internal methods if they exist, but no public send methods
                 self.assertFalse(
                     forbidden in method_name and not method_name.startswith("_safe"),
-                    f"Violación de seguridad de solo lectura: método sospechoso encontrado '{method_name}'",
+                    f"Read-only security violation: suspicious method found '{method_name}'",
                 )
 
     def test_reader_source_code_inspection(self):
-        """Inspecciona el código fuente de TelegramWorkoutReader para confirmar ausencia de llamadas de envío."""
+        """Inspects the source code of TelegramWorkoutReader to confirm no send calls."""
         source = inspect.getsource(TelegramWorkoutReader)
 
         # Telethon methods for sending or modifying content
@@ -50,7 +50,7 @@ class TestMTProtoReadOnlySafety(unittest.TestCase):
             self.assertNotIn(
                 call,
                 source,
-                f"Llamada prohibida detectada en el lector MTProto: '{call}'. El chat debe ser 100% solo lectura.",
+                f"Forbidden call detected in MTProto reader: '{call}'. The chat must be 100% read-only.",
             )
 
 

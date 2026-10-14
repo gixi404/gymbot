@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Script interactivo guiado para autenticar la sesión MTProto de Telethon una única vez."""
+"""Guided interactive script to authenticate the Telethon MTProto session a single time."""
 
 import asyncio
 import sys
@@ -58,7 +58,7 @@ async def main() -> None:
         print(f"\n💡 [IMPORTANTE]: Copia tu User ID ({me.id}) en la variable ALLOWED_TELEGRAM_USER_IDS de tu .env")
         print("   para que tu bot secundario reconozca tu usuario móvil.")
 
-        # Verificación del chat de entrenamientos
+        # Verification of the workout chat
         print(f"\nVerificando acceso al chat de entrenamientos '{settings.TELEGRAM_WORKOUT_CHAT_ID}'...")
         try:
             entity = await client.get_entity(settings.TELEGRAM_WORKOUT_CHAT_ID)
@@ -85,6 +85,21 @@ async def main() -> None:
 
         print("\nEl archivo de sesión ha sido guardado de forma segura.")
         print("Ya puedes usar la CLI (`python cli.py`) o arrancar el servicio de fondo (`python service.py`).\n")
+
+        try:
+            from telethon.sessions import StringSession
+
+            string_session = StringSession.save(client.session)
+            print("=" * 60)
+            print("🔑 SESIÓN EN TEXTO (para TELEGRAM_STRING_SESSION)")
+            print("=" * 60)
+            print("Úsala en despliegues headless (Docker/Railway) donde el archivo de")
+            print("sesión no se incluye en la imagen. Cópiala en la variable")
+            print("TELEGRAM_STRING_SESSION del proveedor de despliegue (es un secreto).\n")
+            print(string_session)
+            print()
+        except Exception as e:
+            print(f"⚠️ No se pudo exportar la sesión en texto: {e}")
 
     await client.disconnect()
 

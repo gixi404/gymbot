@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Backfill de `chat_title` en las filas antiguas de la base de datos.
+"""Backfill of `chat_title` in old rows of the database.
 
-Las primeras sincronizaciones guardaron los mensajes sin `chat_title` (la BD previa a
-la sincronización multi-chat) y el chat principal de entrenamientos se llama "GYM" en
-Telegram, no "Sesiones". El filtrado por grupos del router (Nivel 2) depende del título,
-así que este script normaliza los títulos usando `GROUP_CHAT_MAP`.
+The first synchronizations saved messages without `chat_title` (the DB prior to
+multi-chat synchronization) and the main workout chat is called "GYM" on
+Telegram, not "Sesiones". The router's group filtering (Level 2) depends on the title,
+so this script normalizes the titles using `GROUP_CHAT_MAP`.
 
-Es idempotente: solo rellena filas con `chat_title` vacío, nunca pisa títulos reales.
+It is idempotent: it only fills rows with an empty `chat_title`, never overwrites real titles.
 
-Uso:
+Usage:
     python backfill_chat_titles.py [--dry-run]
 """
 
@@ -25,13 +25,13 @@ logger = logging.getLogger("backfill")
 
 
 def backfill_chat_titles(database: GymDatabase, settings: Settings, dry_run: bool = False) -> int:
-    """Rellena `chat_title` a partir de `chat_id` y `GROUP_CHAT_MAP`.
+    """Fills `chat_title` from `chat_id` and `GROUP_CHAT_MAP`.
 
-    Retorna la cantidad de filas actualizadas.
+    Returns the number of updated rows.
     """
     mapping: dict[str, list[str]] = dict(getattr(settings, "GROUP_CHAT_MAP", None) or {})
 
-    # chat_id -> grupo: solo se aceptan entradas con forma de ID (empiezan por '-' o son dígitos).
+    # chat_id -> group: only entries shaped like an ID are accepted (starting with '-' or digits).
     id_to_group: dict[str, str] = {}
     for group, entries in mapping.items():
         for entry in entries:
@@ -44,7 +44,7 @@ def backfill_chat_titles(database: GymDatabase, settings: Settings, dry_run: boo
             "SELECT DISTINCT chat_id FROM raw_messages WHERE chat_title IS NULL OR chat_title = '';"
         ).fetchall()
         unknown_ids = sorted({r["chat_id"] for r in rows} - set(id_to_group))
-        logger.info("Chats sin título encontrados: %s", [r["chat_id"] for r in rows])
+        logger.info("Chats without title found: %s", [r["chat_id"] for r in rows])
 
         updated = 0
         for chat_id, group in id_to_group.items():
@@ -53,11 +53,11 @@ def backfill_chat_titles(database: GymDatabase, settings: Settings, dry_run: boo
                 (group, chat_id),
             )
             if cursor.rowcount:
-                logger.info("  chat %s -> '%s' (%d filas)", chat_id, group, cursor.rowcount)
+                logger.info("  chat %s -> '%s' (%d rows)", chat_id, group, cursor.rowcount)
                 updated += cursor.rowcount
 
         if unknown_ids:
-            # Resto de filas legacy (sin chat_id identificable): diario principal.
+            # Remaining legacy rows (without an identifiable chat_id): main diary.
             placeholders = ",".join("?" * len(unknown_ids))
             cursor = conn.execute(
                 f"UPDATE raw_messages SET chat_title = ? WHERE chat_id IN ({placeholders}) "
@@ -65,12 +65,12 @@ def backfill_chat_titles(database: GymDatabase, settings: Settings, dry_run: boo
                 [DEFAULT_GROUP, *unknown_ids],
             )
             if cursor.rowcount:
-                logger.info("  chats %s -> '%s' (%d filas)", unknown_ids, DEFAULT_GROUP, cursor.rowcount)
+                logger.info("  chats %s -> '%s' (%d rows)", unknown_ids, DEFAULT_GROUP, cursor.rowcount)
                 updated += cursor.rowcount
 
         if dry_run:
             conn.rollback()
-            logger.info("Dry-run: no se aplicaron cambios.")
+            logger.info("Dry-run: no changes were applied.")
 
     return updated
 
@@ -84,11 +84,11 @@ def main() -> None:
         settings = get_settings()
         database = GymDatabase(settings.DATABASE_PATH)
     except Exception as e:
-        logger.error("Error de inicialización: %s", e)
+        logger.error("Initialization error: %s", e)
         sys.exit(1)
 
     updated = backfill_chat_titles(database, settings, dry_run=args.dry_run)
-    logger.info("Filas actualizadas: %d", updated)
+    logger.info("Rows updated: %d", updated)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Pruebas del clasificador (Nivel 1) y del enrutador de ejecución (Nivel 3)."""
+"""Tests for the classifier (Level 1) and the execution router (Level 3)."""
 
 import asyncio
 import tempfile
@@ -77,7 +77,7 @@ class TestClassifyQuery(unittest.TestCase):
 
 
 class TestThinkFilter(unittest.TestCase):
-    # Los marcadores se construyen por concatenación: un editor puede cortar el literal.
+    # Markers are built by concatenation: an editor could split the literal.
     OPEN = "<" + "think" + ">"
     CLOSE = "<" + "/" + "think" + ">"
 
@@ -120,7 +120,7 @@ class TestGroupResolution(unittest.TestCase):
         self.assertIn("sesiones", titles)
         self.assertIn("gym", titles)
         self.assertIn("-5000217070", chat_ids)
-        self.assertIn("GYM", chat_ids)  # las entradas del mapa actúan como título o ID
+        self.assertIn("GYM", chat_ids)  # map entries act as either title or ID
 
     def test_unknown_group_falls_back_to_all(self):
         titles, chat_ids = resolve_group_targets([], self.settings)
@@ -132,7 +132,7 @@ class TestGroupResolution(unittest.TestCase):
             [t for t in ("sesiones", "cardio", "comidas", "pesocorporal") if t in titles],
             ["sesiones", "cardio", "comidas", "pesocorporal"],
         )
-        # El grupo principal también captura los mensajes sin chat_title.
+        # The main group also captures messages without chat_title.
         self.assertIn("", titles)
         self.assertIn("-5397846915", chat_ids)
         self.assertIn("GYM", chat_ids)
@@ -164,7 +164,7 @@ class TestEngineRouting(unittest.TestCase):
     def test_big_prompt_goes_to_deepseek_only(self):
         client = self._client()
         order = client._engine_order("p" * 9000, "s" * 9000, self._simple_small())
-        self.assertEqual(order, ["deepseek"])  # sin reintento en Groq ligero
+        self.assertEqual(order, ["deepseek"])  # no retry on light Groq
 
     def test_multigroup_long_window_goes_to_deepseek_only(self):
         client = self._client()
@@ -195,7 +195,7 @@ class TestEngineRouting(unittest.TestCase):
         self.assertEqual(client._engine_order("p" * 100, "s" * 100, None), ["light", "deepseek"])
 
     def test_light_models_only_configured_one(self):
-        # GROQ_FALLBACK_MODELS vacío: un único intento en Groq.
+        # GROQ_FALLBACK_MODELS empty: a single attempt on Groq.
         client = self._client(GROQ_FALLBACK_MODELS=[])
         self.assertEqual(client.light_models, ["qwen/qwen3.8-27b"])
 
@@ -243,7 +243,7 @@ class TestFilteredContext(unittest.TestCase):
         self.assertNotIn("Press banca", ctx)
 
     def test_legacy_rows_without_title_and_no_map_fall_back_to_unfiltered(self):
-        # Sin GROUP_CHAT_MAP ni título, el filtro no debe devolver contexto vacío.
+        # Without GROUP_CHAT_MAP or title, the filter must not return empty context.
         self.db.upsert_messages(
             [RawMessage(id=10, date=datetime.now(), text="Sentadilla 100kg 3x5", chat_id="", chat_title="")]
         )
@@ -259,7 +259,7 @@ class TestFilteredContext(unittest.TestCase):
         self.assertNotIn("Correr 5km", ctx)
 
     def test_memory_block_is_capped(self):
-        # 4 turnos de 5000 chars: cada mensaje se recorta a 800 y el bloque a ~2400.
+        # 4 turns of 5000 chars: each message is trimmed to 800 and the block to ~2400.
         history = [{"role": "user" if i % 2 == 0 else "model", "text": "x" * 5000} for i in range(4)]
         prompt = self.analyzer._build_prompt("¿y eso?", fallback_route(), history)
         block = prompt.split("MEMORIA DE LA CONVERSACIÓN PREVIA")[1].split("CONSULTA DEL ATLETA")[0]
@@ -268,7 +268,7 @@ class TestFilteredContext(unittest.TestCase):
 
 
 class _FakeEngine:
-    """Motor falso que evita tocar el SDK real de OpenAI."""
+    """Fake engine that avoids touching the real OpenAI SDK."""
 
     def __init__(self, tag: str, failing: bool = False):
         self.tag = tag
@@ -322,7 +322,7 @@ class TestEngineFallback(unittest.TestCase):
         self.assertEqual(client.generate_response("p" * 100, "sys", route=route), "respuesta-groq")
 
     def test_complex_deepseek_failure_goes_straight_to_gemini(self):
-        # Cadena de complejas: DeepSeek -> Gemini. Nunca se reintenta en Groq ligero.
+        # Complex chain: DeepSeek -> Gemini. Never retried on light Groq.
         client = self._client()
         client.deepseek = _FakeEngine("deepseek", failing=True)
         client.groq = MagicMock()
@@ -381,7 +381,7 @@ class TestChatTitleBackfill(unittest.TestCase):
                 RawMessage(id=1, date=datetime.now(), text="Prensa 140kg", chat_id="-5000217070"),
                 RawMessage(id=2, date=datetime.now(), text="70kg", chat_id="-5397846915"),
                 RawMessage(id=3, date=datetime.now(), text="Hip thrust", chat_id=""),
-                # Título ya correcto: el backfill no debe pisarlo.
+                # Title already correct: backfill must not overwrite it.
                 RawMessage(id=4, date=datetime.now(), text="Otro", chat_id="-5000217070", chat_title="Sesiones"),
             ]
         )
@@ -396,9 +396,9 @@ class TestChatTitleBackfill(unittest.TestCase):
         titles = {(m.chat_id, m.chat_title) for m in self.db.get_messages()}
         self.assertIn(("-5000217070", "Sesiones"), titles)
         self.assertIn(("-5397846915", "PesoCorporal"), titles)
-        self.assertIn(("", "Sesiones"), titles)  # legacy sin chat_id -> grupo principal
+        self.assertIn(("", "Sesiones"), titles)  # legacy without chat_id -> main group
 
-        # Segunda ejecución: nada que actualizar.
+        # Second run: nothing to update.
         self.assertEqual(backfill_chat_titles(self.db, self.settings), 0)
 
     def test_group_filtering_after_backfill(self):

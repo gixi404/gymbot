@@ -1,11 +1,11 @@
-"""Pruebas unitarias para los argumentos y utilidades de la CLI."""
+"""Unit tests for CLI arguments and utilities."""
 
 import unittest
 
 
 class TestCLIUtilities(unittest.TestCase):
     def test_cli_argument_handling(self):
-        # Probamos que cli.py se importe y el analizador de argumentos funcione sin fallas
+        # Verify that cli.py imports and the argument parser works without errors
         import cli
 
         parser = cli.argparse.ArgumentParser()
@@ -25,7 +25,7 @@ class TestCLIUtilities(unittest.TestCase):
         short_text = "Hola mundo"
         self.assertEqual(_split_long_message(short_text, max_length=100), ["Hola mundo"])
 
-        # Texto que sobrepasa el límite
+        # Text that exceeds the limit
         long_lines = ["Línea " + str(i) for i in range(50)]
         joined = "\n".join(long_lines)
         chunks = _split_long_message(joined, max_length=100)

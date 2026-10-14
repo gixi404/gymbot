@@ -1,4 +1,4 @@
-"""Módulo de Inteligencia Artificial y análisis de entrenamientos."""
+"""Artificial Intelligence and workout analysis module."""
 
 from .analyzer import GymAnalyzer
 from .gemini_client import GeminiClient

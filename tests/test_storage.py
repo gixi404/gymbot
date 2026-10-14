@@ -1,4 +1,4 @@
-"""Pruebas unitarias para la persistencia SQLite en GymDatabase."""
+"""Unit tests for SQLite persistence in GymDatabase."""
 
 import tempfile
 import unittest
@@ -37,13 +37,13 @@ class TestGymDatabase(unittest.TestCase):
         inserted = self.db.upsert_messages(msgs)
         self.assertEqual(inserted, 2)
 
-        # Verificar lectura
+        # Verify reading
         stored = self.db.get_messages()
         self.assertEqual(len(stored), 2)
         self.assertEqual(stored[0].id, 1)
         self.assertEqual(stored[0].text, "Banca: 80kg 3x8")
 
-        # Actualizar un mensaje editado
+        # Update an edited message
         edited_msgs = [
             RawMessage(
                 id=1,
@@ -66,7 +66,7 @@ class TestGymDatabase(unittest.TestCase):
         self.db.update_sync_metadata(channel_id, last_message_id=55, total_messages=10)
         self.assertEqual(self.db.get_last_synced_id(channel_id), 55)
 
-        # Actualización posterior
+        # Subsequent update
         self.db.update_sync_metadata(channel_id, last_message_id=60, total_messages=15)
         self.assertEqual(self.db.get_last_synced_id(channel_id), 60)
 
@@ -79,15 +79,15 @@ class TestGymDatabase(unittest.TestCase):
         ]
         self.db.upsert_messages(msgs)
 
-        # Orden cronológico (por defecto)
+        # Chronological order (default)
         chronological = self.db.get_messages()
         self.assertEqual([m.id for m in chronological], [1, 2, 3])
 
-        # Orden inverso
+        # Reverse order
         reverse_order = self.db.get_messages(reverse=True)
         self.assertEqual([m.id for m in reverse_order], [3, 2, 1])
 
-        # Filtro de fechas
+        # Date filter
         filtered = self.db.get_messages(
             since=base_time + timedelta(days=1),
             until=base_time + timedelta(days=3),
@@ -117,34 +117,34 @@ class TestGymDatabase(unittest.TestCase):
 
         for term in ("jalon", "Jalón", "JALON", "jalón"):
             results = self.db.search_messages(term, limit=10)
-            self.assertEqual({r.id for r in results}, {1, 2}, msg=f"falló con {term!r}")
+            self.assertEqual({r.id for r in results}, {1, 2}, msg=f"failed for {term!r}")
 
     def test_conversation_memory_and_clear_deletes_user_messages(self):
         user_id = "test_user_123"
 
-        # Sesión inicial debe ser 1
+        # Initial session must be 1
         self.assertEqual(self.db.get_current_session_id(user_id), 1)
 
-        # Agregar mensajes en sesión 1
+        # Add messages in session 1
         self.db.add_conversation_message(user_id, "user", "¿Cuáles fueron mis pesos en sentadilla?")
         self.db.add_conversation_message(user_id, "assistant", "Hiciste 100kg x 5 y 105kg x 3.")
 
-        # Memoria activa debe tener 2 mensajes
+        # Active memory must have 2 messages
         active = self.db.get_active_memory(user_id)
         self.assertEqual(len(active), 2)
         self.assertEqual(active[0]["text"], "¿Cuáles fueron mis pesos en sentadilla?")
         self.assertEqual(active[1]["text"], "Hiciste 100kg x 5 y 105kg x 3.")
 
-        # Ejecutar /clear (reset_active_memory)
+        # Run /limpiar (reset_active_memory)
         new_session = self.db.reset_active_memory(user_id)
         self.assertEqual(new_session, 2)
         self.assertEqual(self.db.get_current_session_id(user_id), 2)
 
-        # La memoria activa ahora debe estar VACÍA para la IA
+        # Active memory must now be EMPTY for the AI
         active_after_clear = self.db.get_active_memory(user_id)
         self.assertEqual(len(active_after_clear), 0)
 
-        # Y en la base de datos los mensajes del usuario se BORRAN (sin basura acumulada)
+        # And in the database the user messages are DELETED (no accumulated garbage)
         with self.db.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT COUNT(*) as count FROM conversation_messages WHERE user_id = ?;",
@@ -152,13 +152,13 @@ class TestGymDatabase(unittest.TestCase):
             )
             self.assertEqual(cursor.fetchone()["count"], 0)
 
-        # Enviar nuevo mensaje en la nueva sesión
+        # Send a new message in the new session
         self.db.add_conversation_message(user_id, "user", "Hola, empezamos de nuevo.")
         active_session_2 = self.db.get_active_memory(user_id)
         self.assertEqual(len(active_session_2), 1)
         self.assertEqual(active_session_2[0]["text"], "Hola, empezamos de nuevo.")
 
-        # El único mensaje en BD es el nuevo
+        # The only message in the DB is the new one
         with self.db.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT COUNT(*) as count FROM conversation_messages WHERE user_id = ?;",
@@ -167,26 +167,26 @@ class TestGymDatabase(unittest.TestCase):
             self.assertEqual(cursor.fetchone()["count"], 1)
 
     def test_get_stats_with_channel_id_list(self):
-        # Registramos sincronización para dos canales distintos
+        # Register sync for two different channels
         self.db.update_sync_metadata("-1001", last_message_id=10, total_messages=5)
         self.db.update_sync_metadata("-1002", last_message_id=20, total_messages=10)
 
-        # Consultar pasando una lista de chats (como ocurre en la configuración)
+        # Query passing a list of chats (as happens in the configuration)
         stats = self.db.get_stats(channel_id=["-1001", "-1002"])
         self.assertIsNotNone(stats.last_sync_at)
 
     def test_get_last_synced_id_fallback_chat_isolation(self):
-        # Canal 1 tiene mensaje con ID 500
+        # Channel 1 has a message with ID 500
         msg_c1 = RawMessage(id=500, date=datetime.now(), text="C1", chat_id="-1001")
         self.db.upsert_messages([msg_c1])
 
-        # Canal 2 es nuevo y no tiene metadata; su fallback debe ser 0, no 500
+        # Channel 2 is new and has no metadata; its fallback must be 0, not 500
         last_id_c2 = self.db.get_last_synced_id("-1002")
         self.assertEqual(last_id_c2, 0)
 
     def test_composite_primary_key_multi_chat_coexistence(self):
         now = datetime.now()
-        # Mismo id=100 en dos chats diferentes
+        # Same id=100 in two different chats
         msg_gym = RawMessage(id=100, date=now, text="Press militar 60kg", chat_id="-5000217070", chat_title="GYM")
         msg_food = RawMessage(id=100, date=now, text="Avena 80g + Whey", chat_id="-5335679250", chat_title="Comidas")
 
@@ -197,7 +197,7 @@ class TestGymDatabase(unittest.TestCase):
         chats = {m.chat_id for m in stored}
         self.assertEqual(chats, {"-5000217070", "-5335679250"})
 
-        # Comprobar formato to_summary_line
+        # Check to_summary_line format
         summary_gym = msg_gym.to_summary_line()
         self.assertIn("[GYM]", summary_gym)
         self.assertIn("Press militar 60kg", summary_gym)

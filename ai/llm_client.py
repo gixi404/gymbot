@@ -1,16 +1,16 @@
-"""Cliente LLM híbrido de GymBot (Groq / DeepSeek / Gemini).
+"""Hybrid GymBot LLM client (Groq / DeepSeek / Gemini).
 
-- **Nivel 3 — Enrutamiento de ejecución:** las consultas simples y ligeras van a
-  `qwen/qwen3-32b` en Groq (rápido, evita la congestión de Gemini); las complejas,
-  grandes o que cruzan varios grupos durante meses van a DeepSeek.
-- **Fallback automático:** si el motor primario falla (429, caída), se reintenta
-  con el otro y finalmente con Gemini, sin romper el streaming.
-- **Filtro`; el generador de streaming los suprime en tiempo real.
-- **Gemini** se reserva para visión (fotos/documentos) y como último respaldo.
+- **Level 3 — Execution routing:** simple, light queries go to
+  `qwen/qwen3-32b` on Groq (fast, avoids Gemini congestion); complex, large
+  or multi-group queries spanning months go to DeepSeek.
+- **Automatic fallback:** if the primary engine fails (429, outage), it retries
+  with the other and finally with Gemini, without breaking streaming.
+- **Filter`; the streaming generator suppresses them in real time.
+- **Gemini** is reserved for vision (photos/documents) and as the last resort.
 
-La interfaz pública (`generate_response`, `transcribe_audio`,
-`generate_response_stream_async`) es idéntica a la del antiguo GeminiClient para que
-`GymAnalyzer` no dependa del proveedor.
+The public interface (`generate_response`, `transcribe_audio`,
+`generate_response_stream_async`) is identical to that of the old GeminiClient so that
+`GymAnalyzer` does not depend on the provider.
 """
 
 import asyncio
@@ -28,9 +28,9 @@ from .router import QueryRoute
 
 logger = logging.getLogger(__name__)
 
-GROQ_RATE_LIMIT_BACKOFF = 2.0  # Segundos de espera ante un 429 de Groq
+GROQ_RATE_LIMIT_BACKOFF = 2.0  # Seconds to wait on a Groq 429
 
-# Caracteres por token usados para estimar el tamaño del prompt (~3.8 para español).
+# Characters per token used to estimate prompt size (~3.8 for Spanish).
 CHARS_PER_TOKEN = 3.8
 
 _THINK_RE = re.compile("<think>.*?</think>", re.DOTALL)
@@ -38,14 +38,14 @@ _THINK_TAIL_RE = re.compile("<think>.*$", re.DOTALL)
 
 
 def strip_think_blocks(text: str) -> str:
-    """Elimina los bloques de razonamiento (incluido uno sin cerrar) de un texto completo."""
+    """Remove reasoning blocks (including an unclosed one) from a full text."""
     return _THINK_TAIL_RE.sub("", _THINK_RE.sub("", text))
 
 
 class ThinkFilter:
-    """Suprime bloques de razonamiento en streaming, aunque el marcador llegue partido."""
+    """Suppress reasoning blocks while streaming, even if the marker arrives split."""
 
-    # Marcadores armados por concatenación: evitan que herramientas externas corten el literal.
+    # Markers built by concatenation: they prevent external tools from cutting the literal.
     _OPEN = "<" + "think" + ">"
     _CLOSE = "<" + "/" + "think" + ">"
 
@@ -54,14 +54,14 @@ class ThinkFilter:
         self._in_think = False
 
     def _hold_tail(self, marker: str) -> int:
-        """Caracteres finales del buffer que podrían ser el inicio de `marker`."""
+        """Trailing buffer characters that could be the start of `marker`."""
         for size in range(len(marker) - 1, 0, -1):
             if self._buffer.endswith(marker[:size]):
                 return size
         return 0
 
     def feed(self, chunk: str) -> str:
-        """Procesa un fragmento de stream y devuelve solo el texto visible."""
+        """Process a stream chunk and return only the visible text."""
         self._buffer += chunk
         out: list[str] = []
 
@@ -91,13 +91,13 @@ class ThinkFilter:
         return "".join(out)
 
     def flush(self) -> str:
-        """Vacía el buffer restante al cerrar el stream (nada si quedo dentro del bloque)."""
+        """Flush the remaining buffer on stream close (nothing if it ended inside the block)."""
         rest, self._buffer = self._buffer, ""
         return "" if self._in_think else rest
 
 
 class GroqClient:
-    """Cliente Groq sobre el SDK de OpenAI (sin visión; Whisper para audio)."""
+    """Groq client on top of the OpenAI SDK (no vision; Whisper for audio)."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -107,7 +107,7 @@ class GroqClient:
         self.classifier_model = settings.GROQ_CLASSIFIER_MODEL
 
         if not self.api_key:
-            raise ValueError("GROQ_API_KEY no está configurada en las variables de entorno (.env).")
+            raise ValueError("GROQ_API_KEY is not set in the environment variables (.env).")
 
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         self.async_client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
@@ -123,7 +123,7 @@ class GroqClient:
         return candidates
 
     def _candidate_models(self, models=None) -> list[str]:
-        """Modelos candidatos (principales + respaldos) sin duplicados."""
+        """Candidate models (primary + fallbacks) without duplicates."""
         return self._dedupe(models if models is not None else self.settings.GROQ_FALLBACK_MODELS)
 
     def _messages(self, prompt: str, system_instruction: str) -> list[dict]:
@@ -140,7 +140,7 @@ class GroqClient:
         max_tokens: int = 256,
         temperature: float = 0.0,
     ) -> str:
-        """Pide al modelo una respuesta en JSON estricto (usado por el clasificador)."""
+        """Ask the model for a strict JSON response (used by the classifier)."""
         messages = self._messages(prompt, system_instruction)
         last_error: Exception | None = None
 
@@ -154,14 +154,14 @@ class GroqClient:
                     response_format={"type": "json_object"},
                 )
                 return (response.choices[0].message.content or "").strip()
-            except Exception as e:  # noqa: BLE001 - se propaga para que actúe el fallback
+            except Exception as e:  # noqa: BLE001 - propagated so the fallback can act
                 last_error = e
-                logger.warning("Groq '%s' falló generando JSON (%s)", candidate, e)
+                logger.warning("Groq '%s' failed generating JSON (%s)", candidate, e)
 
-        raise RuntimeError(f"Fallo al generar JSON con Groq ({self._candidate_models([model])}): {last_error}")
+        raise RuntimeError(f"Failed to generate JSON with Groq ({self._candidate_models([model])}): {last_error}")
 
     def generate_response(self, prompt: str, system_instruction: str, temperature: float = 0.2, models=None) -> str:
-        """Genera texto con fallback inmediato entre los modelos indicados."""
+        """Generate text with immediate fallback across the given models."""
         messages = self._messages(prompt, system_instruction)
         last_error: Exception | None = None
 
@@ -179,15 +179,15 @@ class GroqClient:
                 last_error = e
                 if isinstance(e, RateLimitError):
                     time.sleep(GROQ_RATE_LIMIT_BACKOFF)
-                logger.warning("Groq '%s' falló (%s). Probando siguiente modelo...", model, e)
-            except Exception as e:  # noqa: BLE001 - red de seguridad para delegar en Gemini
+                logger.warning("Groq '%s' failed (%s). Trying the next model...", model, e)
+            except Exception as e:  # noqa: BLE001 - safety net to delegate to Gemini
                 last_error = e
-                logger.warning("Excepción inesperada en Groq '%s': %s. Probando siguiente...", model, e)
+                logger.warning("Unexpected exception in Groq '%s': %s. Trying the next one...", model, e)
 
-        raise RuntimeError(f"Fallo al invocar Groq con modelos {self._candidate_models(models)}: {last_error}")
+        raise RuntimeError(f"Failed to invoke Groq with models {self._candidate_models(models)}: {last_error}")
 
     def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-        """Transcribe audio con Whisper (Groq)."""
+        """Transcribe audio with Whisper (Groq)."""
         clean_mime = (mime_type or "audio/ogg").split(";")[0].strip().lower()
         if clean_mime in ("audio/oga", "audio/opus"):
             clean_mime = "audio/ogg"
@@ -204,7 +204,7 @@ class GroqClient:
     async def generate_response_stream_async(
         self, prompt: str, system_instruction: str, temperature: float = 0.2, models=None
     ) -> AsyncGenerator[str, None]:
-        """Streaming asíncrono con filtro `` y fallback inmediato entre modelos de Groq."""
+        """Asynchronous streaming with `` filter and immediate fallback across Groq models."""
         messages = self._messages(prompt, system_instruction)
         last_error: Exception | None = None
         yielded_any = False
@@ -234,30 +234,30 @@ class GroqClient:
                     yielded_visible = True
 
                 if not yielded_visible:
-                    # Todo el stream fue razonamiento interno vacío.
-                    logger.warning("Modelo Groq '%s' solo devolvió bloques <think>.", model)
+                    # The whole stream was empty internal reasoning.
+                    logger.warning("Groq model '%s' returned only <think> blocks.", model)
                     yield "No pude generar una respuesta concreta. Intenta reformular la pregunta."
                 return
             except (RateLimitError, APIStatusError, APIConnectionError) as e:
                 last_error = e
                 if yielded_any:
-                    logger.error("Error intermedio en streaming Groq '%s' tras emitir tokens: %s", model, e)
+                    logger.error("Intermediate error in Groq stream '%s' after emitting tokens: %s", model, e)
                     return
                 if isinstance(e, RateLimitError):
                     await asyncio.sleep(GROQ_RATE_LIMIT_BACKOFF)
-                logger.warning("Streaming Groq '%s' falló (%s). Probando siguiente...", model, e)
+                logger.warning("Groq stream '%s' failed (%s). Trying the next one...", model, e)
             except Exception as e:  # noqa: BLE001
                 last_error = e
                 if yielded_any:
-                    logger.error("Excepción intermedia en streaming Groq '%s' tras emitir tokens: %s", model, e)
+                    logger.error("Intermediate exception in Groq stream '%s' after emitting tokens: %s", model, e)
                     return
-                logger.warning("Excepción inesperada en streaming Groq '%s': %s. Probando siguiente...", model, e)
+                logger.warning("Unexpected exception in Groq stream '%s': %s. Trying the next one...", model, e)
 
-        raise RuntimeError(f"Fallo al transmitir con Groq {self._candidate_models(models)}: {last_error}")
+        raise RuntimeError(f"Failed to stream with Groq {self._candidate_models(models)}: {last_error}")
 
 
 class DeepSeekClient:
-    """Cliente DeepSeek sobre el SDK de OpenAI (análisis complejo y respaldo de Groq)."""
+    """DeepSeek client on top of the OpenAI SDK (complex analysis and Groq fallback)."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -267,7 +267,7 @@ class DeepSeekClient:
         self.max_output_tokens = settings.DEEPSEEK_MAX_OUTPUT_TOKENS
 
         if not self.api_key:
-            raise ValueError("DEEPSEEK_API_KEY no está configurada en las variables de entorno (.env).")
+            raise ValueError("DEEPSEEK_API_KEY is not set in the environment variables (.env).")
 
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         self.async_client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
@@ -280,7 +280,7 @@ class DeepSeekClient:
         ]
 
     def generate_response(self, prompt: str, system_instruction: str, temperature: float = 0.2) -> str:
-        """Genera texto eliminando los bloques `` del razonamiento explícito."""
+        """Generate text by removing the `` blocks of explicit reasoning."""
         try:
             response = self.client.chat.completions.create(
                 model=self.model_name,
@@ -291,12 +291,12 @@ class DeepSeekClient:
             text = strip_think_blocks(response.choices[0].message.content or "").strip()
             return text or "No se obtuvo respuesta de texto del modelo."
         except (RateLimitError, APIStatusError, APIConnectionError) as e:
-            raise RuntimeError(f"DeepSeek '{self.model_name}' falló: {e}") from e
+            raise RuntimeError(f"DeepSeek '{self.model_name}' failed: {e}") from e
 
     async def generate_response_stream_async(
         self, prompt: str, system_instruction: str, temperature: float = 0.2
     ) -> AsyncGenerator[str, None]:
-        """Streaming asíncrono con filtro `` en tiempo real."""
+        """Asynchronous streaming with `` filter in real time."""
         stream = await self.async_client.chat.completions.create(
             model=self.model_name,
             messages=self._messages(prompt, system_instruction),
@@ -320,12 +320,12 @@ class DeepSeekClient:
             yielded_visible = True
 
         if not yielded_visible:
-            logger.warning("DeepSeek '%s' solo devolvió bloques <think>.", self.model_name)
+            logger.warning("DeepSeek '%s' returned only <think> blocks.", self.model_name)
             yield "No pude generar una respuesta concreta. Intenta reformular la pregunta."
 
 
 class LLMClient:
-    """Enrutador híbrido: Groq ligero / DeepSeek según complejidad, Gemini para visión."""
+    """Hybrid router: light Groq / DeepSeek by complexity, Gemini for vision."""
 
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
@@ -336,39 +336,39 @@ class LLMClient:
             try:
                 self.groq = GroqClient(self.settings)
             except Exception as e:  # noqa: BLE001
-                logger.warning("Groq no disponible (%s). Se usará DeepSeek/Gemini.", e)
+                logger.warning("Groq unavailable (%s). DeepSeek/Gemini will be used.", e)
         else:
-            logger.warning("GROQ_API_KEY vacía. Sin motor ligero de Groq.")
+            logger.warning("GROQ_API_KEY is empty. No light Groq engine.")
 
         self.deepseek: DeepSeekClient | None = None
         if self.settings.DEEPSEEK_API_KEY:
             try:
                 self.deepseek = DeepSeekClient(self.settings)
             except Exception as e:  # noqa: BLE001
-                logger.warning("DeepSeek no disponible (%s). Se usará Groq/Gemini.", e)
+                logger.warning("DeepSeek unavailable (%s). Groq/Gemini will be used.", e)
         else:
-            logger.info("DEEPSEEK_API_KEY vacía. DeepSeek queda desactivado.")
+            logger.info("DEEPSEEK_API_KEY is empty. DeepSeek stays disabled.")
 
-        # Modelos del motor ligero (principal de Groq + respaldos configurados).
+        # Light engine models (Groq primary + configured fallbacks).
         self.light_models = GroqClient._dedupe([self.settings.GROQ_LIGHT_MODEL, *self.settings.GROQ_FALLBACK_MODELS])
 
     def _use_light_engine(self, route: QueryRoute | None, estimated_tokens: float, threshold: int) -> bool:
-        """Regla de decisión: simple y pequeño → Groq; el resto → DeepSeek."""
+        """Decision rule: simple and small → Groq; the rest → DeepSeek."""
         long_multi = (
             route is not None
             and len(route.groups) >= 2
             and (route.days_lookback == 0 or route.days_lookback > self.settings.ROUTER_MULTI_GROUP_DAYS)
         )
         if route is None:
-            # Sin clasificar (resumen semanal, progresión, macros...): pequeño → Groq.
+            # Unclassified (weekly summary, progression, macros...): small → Groq.
             return estimated_tokens < threshold
         return route.complexity == "simple" and estimated_tokens < threshold and not long_multi
 
     def _engine_order(self, prompt: str, system_instruction: str, route: QueryRoute | None) -> list[str]:
-        """Cadena estricta de motores según la regla de decisión.
+        """Strict engine chain according to the decision rule.
 
-        - Consultas simples/livianas: Groq ligero -> DeepSeek (luego Gemini, fuera de aquí).
-        - Consultas complejas: solo DeepSeek (nunca se reintenta en Groq ligero).
+        - Simple/light queries: light Groq -> DeepSeek (then Gemini, outside here).
+        - Complex queries: DeepSeek only (never retried on light Groq).
         """
         estimated_tokens = (len(prompt) + len(system_instruction)) / CHARS_PER_TOKEN
         order: list[str] = []
@@ -390,7 +390,7 @@ class LLMClient:
             return self.groq.generate_response(prompt, system_instruction, temperature, models=self.light_models)
         if engine == "deepseek" and self.deepseek:
             return self.deepseek.generate_response(prompt, system_instruction, temperature)
-        raise RuntimeError(f"Motor '{engine}' no configurado")
+        raise RuntimeError(f"Engine '{engine}' not configured")
 
     def _stream_call(
         self, engine: str, prompt: str, system_instruction: str, temperature: float
@@ -402,15 +402,15 @@ class LLMClient:
             )
         if engine == "deepseek" and self.deepseek:
             return self.deepseek.generate_response_stream_async(prompt, system_instruction, temperature)
-        raise RuntimeError(f"Motor '{engine}' no configurado")
+        raise RuntimeError(f"Engine '{engine}' not configured")
 
     def generate_json(self, prompt: str, system_instruction: str, max_tokens: int = 256) -> str:
-        """JSON estricto para el clasificador (Groq); Gemini como respaldo."""
+        """Strict JSON for the classifier (Groq); Gemini as fallback."""
         if self.groq:
             try:
                 return self.groq.generate_json(prompt, system_instruction, max_tokens=max_tokens)
             except Exception as e:  # noqa: BLE001
-                logger.warning("Clasificación con Groq no disponible (%s). Respaldo con Gemini.", e)
+                logger.warning("Groq classification unavailable (%s). Falling back to Gemini.", e)
         return self.gemini.generate_response(
             prompt=prompt,
             system_instruction=system_instruction,
@@ -425,13 +425,13 @@ class LLMClient:
         temperature: float = 0.2,
         route: QueryRoute | None = None,
     ) -> str:
-        """Texto → Groq ligero/DeepSeek; adjuntos (visión) → Gemini con respaldo."""
+        """Text → light Groq/DeepSeek; attachments (vision) → Gemini as fallback."""
         if not attachments and (self.groq or self.deepseek):
             for engine in self._engine_order(prompt, system_instruction, route):
                 try:
                     return self._sync_call(engine, prompt, system_instruction, temperature)
-                except Exception as e:  # noqa: BLE001 - se degrada al siguiente motor
-                    logger.warning("Motor '%s' falló (%s). Probando siguiente motor...", engine, e)
+                except Exception as e:  # noqa: BLE001 - degrades to the next engine
+                    logger.warning("Engine '%s' failed (%s). Trying the next engine...", engine, e)
         return self.gemini.generate_response(
             prompt=prompt,
             system_instruction=system_instruction,
@@ -440,12 +440,12 @@ class LLMClient:
         )
 
     def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-        """Audio → Whisper (Groq); fallo → Gemini."""
+        """Audio → Whisper (Groq); failure → Gemini."""
         if self.groq:
             try:
                 return self.groq.transcribe_audio(audio_bytes, mime_type)
             except Exception as e:  # noqa: BLE001
-                logger.warning("Whisper (Groq) falló (%s). Respaldo con Gemini.", e)
+                logger.warning("Whisper (Groq) failed (%s). Falling back to Gemini.", e)
         return self.gemini.transcribe_audio(audio_bytes, mime_type=mime_type)
 
     async def generate_response_stream_async(
@@ -456,7 +456,7 @@ class LLMClient:
         temperature: float = 0.2,
         route: QueryRoute | None = None,
     ) -> AsyncGenerator[str, None]:
-        """Streaming: texto → Groq ligero/DeepSeek; adjuntos o fallo total → Gemini."""
+        """Streaming: text → light Groq/DeepSeek; attachments or total failure → Gemini."""
         if not attachments and (self.groq or self.deepseek):
             yielded_any = False
             for engine in self._engine_order(prompt, system_instruction, route):
@@ -465,11 +465,11 @@ class LLMClient:
                         yielded_any = True
                         yield chunk
                     return
-                except Exception as e:  # noqa: BLE001 - se degrada al siguiente motor
+                except Exception as e:  # noqa: BLE001 - degrades to the next engine
                     if yielded_any:
-                        logger.error("Error intermedio en streaming del motor '%s' tras emitir tokens: %s", engine, e)
+                        logger.error("Intermediate error in engine '%s' stream after emitting tokens: %s", engine, e)
                         return
-                    logger.warning("Streaming del motor '%s' falló (%s). Probando siguiente motor...", engine, e)
+                    logger.warning("Engine '%s' stream failed (%s). Trying the next engine...", engine, e)
 
         async for chunk in self.gemini.generate_response_stream_async(
             prompt=prompt,

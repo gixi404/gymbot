@@ -1,4 +1,4 @@
-"""Bot secundario de Telegram para consultas móviles con autenticación estricta por whitelist."""
+"""Secondary Telegram bot for mobile queries with strict whitelist authentication."""
 
 import asyncio
 import logging
@@ -28,13 +28,16 @@ from visualization.chart_generator import ChartGenerator
 
 logger = logging.getLogger(__name__)
 
-# Límite máximo de caracteres por mensaje en Telegram
+# Maximum characters per Telegram message
 TELEGRAM_MESSAGE_MAX_LENGTH = 4000
+
+# Telegram Bot API download limit (bytes). Enforced before processing attachments.
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
 
 @asynccontextmanager
 async def _send_typing_action(chat, interval: float = 4.0):
-    """Mantiene activo el indicador 'escribiendo...' en Telegram mientras se procesa la solicitud."""
+    """Keeps the Telegram 'typing...' indicator active while the request is processed."""
 
     async def _keep_typing():
         try:
@@ -58,7 +61,7 @@ async def _send_typing_action(chat, interval: float = 4.0):
 
 
 def _split_long_message(text: str, max_length: int = TELEGRAM_MESSAGE_MAX_LENGTH) -> list[str]:
-    """Divide un texto largo en bloques respetando saltos de línea para no exceder los límites de Telegram."""
+    """Splits long text into chunks on line boundaries so Telegram limits are not exceeded."""
     if len(text) <= max_length:
         return [text]
 
@@ -74,7 +77,7 @@ def _split_long_message(text: str, max_length: int = TELEGRAM_MESSAGE_MAX_LENGTH
                 chunks.append("\n".join(current_chunk))
                 current_chunk = []
                 current_length = 0
-            # Si una sola línea excede el límite máximo
+            # If a single line exceeds the maximum length
             if len(line) > max_length:
                 for i in range(0, len(line), max_length):
                     chunks.append(line[i : i + max_length])
@@ -92,7 +95,7 @@ def _split_long_message(text: str, max_length: int = TELEGRAM_MESSAGE_MAX_LENGTH
 
 
 class GymTelegramBot:
-    """Servicio del bot de Telegram para atención de consultas desde el móvil."""
+    """Telegram bot service that handles queries from mobile clients."""
 
     def __init__(
         self,
@@ -108,18 +111,18 @@ class GymTelegramBot:
         self._app: Application | None = None
 
         if not self.settings.TELEGRAM_BOT_TOKEN:
-            raise ValueError("TELEGRAM_BOT_TOKEN no configurado en .env. Crea un bot con @BotFather y añade el token.")
+            raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env. Create a bot with @BotFather and add the token.")
 
         self.allowed_ids = set(self.settings.ALLOWED_TELEGRAM_USER_IDS)
         if not self.allowed_ids:
             logger.warning(
-                "ALLOWED_TELEGRAM_USER_IDS está vacío en .env. "
-                "¡El bot ignorará todos los mensajes hasta que agregues tu telegram_user_id!"
+                "ALLOWED_TELEGRAM_USER_IDS is empty in .env. "
+                "The bot will ignore all messages until you add your telegram_user_id!"
             )
 
     @staticmethod
     def _get_main_keyboard() -> InlineKeyboardMarkup:
-        """Teclado interactivo principal con accesos rápidos."""
+        """Main interactive keyboard with quick actions."""
         buttons = [
             [
                 InlineKeyboardButton("📈 Gráficos de Progreso", callback_data="btn_chart_menu"),
@@ -142,7 +145,7 @@ class GymTelegramBot:
 
     @staticmethod
     def _get_chart_keyboard() -> InlineKeyboardMarkup:
-        """Teclado para seleccionar el gráfico a generar."""
+        """Keyboard to select the chart to generate."""
         buttons = [
             [
                 InlineKeyboardButton("⚖️ Peso Corporal", callback_data="chart_weight"),
@@ -160,7 +163,7 @@ class GymTelegramBot:
 
     @staticmethod
     def _get_progression_keyboard() -> InlineKeyboardMarkup:
-        """Teclado para consultar la progresión del próximo entrenamiento."""
+        """Keyboard to query progression for the next workout."""
         buttons = [
             [
                 InlineKeyboardButton("Press Banca", callback_data="prog_banca"),
@@ -176,7 +179,7 @@ class GymTelegramBot:
         return InlineKeyboardMarkup(buttons)
 
     def _is_authorized(self, update: Update) -> bool:
-        """Verifica si el remitente está autorizado según la whitelist."""
+        """Checks whether the sender is authorized by the whitelist."""
         user = update.effective_user
         if not user:
             return False
@@ -185,15 +188,15 @@ class GymTelegramBot:
             return True
 
         logger.warning(
-            "⚠️ Intento de acceso no autorizado bloqueado: usuario '%s' (ID: %d)",
-            user.username or "desconocido",
+            "⚠️ Blocked unauthorized access attempt: user '%s' (ID: %d)",
+            user.username or "unknown",
             user.id,
         )
         return False
 
     @staticmethod
     async def _safe_reply(message, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup=None) -> None:
-        """Envía un mensaje intentando formato Markdown, con fallback automático a texto plano."""
+        """Sends a message trying Markdown format, with automatic fallback to plain text."""
         try:
             await message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
         except Exception:
@@ -201,7 +204,7 @@ class GymTelegramBot:
 
     @staticmethod
     async def _safe_edit(message, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup=None) -> None:
-        """Edita un mensaje intentando formato Markdown, con fallback automático a texto plano."""
+        """Edits a message trying Markdown format, with automatic fallback to plain text."""
         try:
             await message.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
         except Exception:
@@ -209,7 +212,7 @@ class GymTelegramBot:
 
     @staticmethod
     async def _safe_reply_photo(message, photo, caption: str = "", parse_mode: str = ParseMode.MARKDOWN) -> None:
-        """Envía una foto intentando formato Markdown en el caption, con fallback a texto plano."""
+        """Sends a photo trying Markdown format in the caption, with fallback to plain text."""
         try:
             await message.reply_photo(photo=photo, caption=caption, parse_mode=parse_mode)
         except Exception:
@@ -219,17 +222,17 @@ class GymTelegramBot:
     async def _safe_reply_document(
         message, document, filename: str, caption: str = "", parse_mode: str = ParseMode.MARKDOWN
     ) -> None:
-        """Envía un documento intentando formato Markdown en el caption, con fallback a texto plano."""
+        """Sends a document trying Markdown format in the caption, with fallback to plain text."""
         try:
             await message.reply_document(document=document, filename=filename, caption=caption, parse_mode=parse_mode)
         except Exception:
             await message.reply_document(document=document, filename=filename, caption=caption)
 
     def _remember(self, user_id: str, user_text: str, bot_reply: str) -> None:
-        """Registra un intercambio de comando/botón en la memoria conversacional activa.
+        """Records a command/button exchange in the active conversational memory.
 
-        Solo se usa para respuestas analíticas (macros, progresión, resumen semanal),
-        no para comandos de sistema (stats, sync, export, gráficos).
+        Only used for analytical responses (macros, progression, weekly summary),
+        not for system commands (stats, sync, export, charts).
         """
         if not bot_reply:
             return
@@ -237,17 +240,17 @@ class GymTelegramBot:
             self.database.add_conversation_message(str(user_id), "user", user_text)
             self.database.add_conversation_message(str(user_id), "model", bot_reply)
         except Exception as e:
-            logger.warning("No se pudo registrar memoria conversacional: %s", e)
+            logger.warning("Could not record conversational memory: %s", e)
 
     async def _background_sync_safe(self) -> None:
-        """Sincroniza en segundo plano sin bloquear ni añadir latencia a las consultas."""
+        """Syncs in the background without blocking or adding latency to queries."""
         try:
             await self.reader.sync_channel(min_interval_seconds=30.0)
         except Exception as e:
-            logger.debug("Sincronización en segundo plano omitida o diferida: %s", e)
+            logger.debug("Background sync skipped or deferred: %s", e)
 
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /start."""
+        """Command /inicio (alias /start)."""
         if not self._is_authorized(update):
             return
 
@@ -266,14 +269,14 @@ class GymTelegramBot:
             "• `/macros [fecha]` - Macros y calorías de hoy o de una fecha (ej. `12/10/2026`).\n"
             "• `/proxima [ejercicio]` - Carga sugerida con doble progresión.\n"
             "• `/semana` - Resumen semanal ejecutivo.\n"
-            "• `/export` - Descarga tu historial en archivo CSV.\n"
-            "• `/sync` | `/stats` | `/clear` | `/help`"
+            "• `/exportar` - Descarga tu historial en archivo CSV.\n"
+            "• `/sincronizar` | `/estadisticas` | `/limpiar` | `/ayuda`"
         )
 
         await self._safe_reply(update.message, welcome_text, reply_markup=self._get_main_keyboard())
 
     async def _handle_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /menu."""
+        """Command /menu."""
         if not self._is_authorized(update):
             return
         await self._safe_reply(
@@ -283,7 +286,7 @@ class GymTelegramBot:
         )
 
     async def _handle_chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /grafico [peso | ejercicio]."""
+        """Command /grafico [peso | exercise]."""
         if not self._is_authorized(update):
             return
 
@@ -300,7 +303,7 @@ class GymTelegramBot:
         await self._generate_and_send_chart(update.message, query)
 
     async def _generate_and_send_chart(self, message, query: str) -> None:
-        """Genera y envía el gráfico solicitado."""
+        """Generates and sends the requested chart."""
         all_messages = self.database.get_messages(reverse=False)
 
         if "peso" in query:
@@ -324,7 +327,7 @@ class GymTelegramBot:
             await self._safe_reply_photo(message, photo=buf, caption=f"🏋️ *Progresión de Fuerza: {canonical}*")
 
     async def _handle_macros(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /macros [fecha] — sin argumento analiza hoy; con argumento analiza la fecha indicada."""
+        """Command /macros [date] — with no argument analyzes today; with an argument analyzes the given date."""
         if not self._is_authorized(update):
             return
 
@@ -341,7 +344,7 @@ class GymTelegramBot:
         self._remember(str(update.effective_user.id), f"/macros {date_arg or ''}".strip(), result)
 
     async def _handle_progression(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /proxima [ejercicio]."""
+        """Command /proxima [exercise]."""
         if not self._is_authorized(update):
             return
 
@@ -362,7 +365,7 @@ class GymTelegramBot:
         self._remember(str(update.effective_user.id), f"/proxima {ex_name}", result)
 
     async def _handle_weekly(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /semana o /resumen."""
+        """Command /semana or /resumen."""
         if not self._is_authorized(update):
             return
 
@@ -373,7 +376,7 @@ class GymTelegramBot:
         self._remember(str(update.effective_user.id), "/semana", result)
 
     async def _handle_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /export o /backup."""
+        """Command /exportar (alias /export, /backup)."""
         if not self._is_authorized(update):
             return
 
@@ -393,11 +396,11 @@ class GymTelegramBot:
             except Exception:
                 pass
         except Exception as e:
-            logger.error("Error exportando datos: %s", e)
+            logger.error("Error exporting data: %s", e)
             await status_msg.edit_text(f"❌ Error al exportar: {e}")
 
     async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Manejador centralizado de pulsaciones de botones interactivos."""
+        """Centralized handler for interactive button presses."""
         query = update.callback_query
         if not query or not query.data:
             return
@@ -471,7 +474,7 @@ class GymTelegramBot:
                 )
                 await self._safe_edit(status_msg, msg_text)
             except Exception as e:
-                logger.error("Error durante sincronización por botón: %s", e)
+                logger.error("Error during button-triggered sync: %s", e)
                 await status_msg.edit_text(f"❌ Error al sincronizar: {str(e)}")
         elif data == "btn_export":
             try:
@@ -484,14 +487,14 @@ class GymTelegramBot:
                     caption="💾 *Historial exportado con éxito*.",
                 )
             except Exception as e:
-                logger.error("Error exportando CSV: %s", e)
+                logger.error("Error exporting CSV: %s", e)
                 await msg.reply_text(f"❌ Error al exportar: {e}")
         elif data == "btn_clear":
             self.database.reset_active_memory(str(user_id))
             await msg.reply_text("Memoria reiniciada")
 
     async def send_proactive_message(self, text: str) -> None:
-        """Envía un mensaje proactivo a todos los usuarios de la whitelist."""
+        """Sends a proactive message to all whitelisted users."""
         if not self._app:
             return
         for uid in self.allowed_ids:
@@ -510,10 +513,10 @@ class GymTelegramBot:
                             text=chunk,
                         )
             except Exception as e:
-                logger.error("Error enviando mensaje proactivo a usuario %d: %s", uid, e)
+                logger.error("Error sending proactive message to user %d: %s", uid, e)
 
     async def _handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /help."""
+        """Command /ayuda (alias /help)."""
         if not self._is_authorized(update):
             return
 
@@ -527,17 +530,23 @@ class GymTelegramBot:
             "• 📸 _Adjuntar foto de libreta o captura de app con tu consulta._\n"
             "• 📄 _Adjuntar PDF de rutina o informe de composición corporal._\n\n"
             "⚙️ *Comandos útiles:*\n"
+            "• `/menu` - Menú de acciones rápidas.\n"
             "• `/macros` - Macros y calorías de hoy.\n"
             "• `/macros 12/10/2026` - Macros de una fecha específica.\n"
             "• `/macros ayer` - Macros del día anterior.\n"
-            "• `/sync` - Sincroniza inmediatamente nuevos entrenamientos anotados.\n"
-            "• `/clear` - Reinicia la memoria conversacional activa para iniciar una nueva charla.\n"
-            "• `/stats` - Consulta el volumen de registros guardados y fechas."
+            "• `/proxima press banca` - Carga sugerida para el próximo entrenamiento.\n"
+            "• `/grafico prensa` - Gráfica de evolución de un ejercicio (`/grafico peso` para peso corporal).\n"
+            "• `/semana` - Resumen semanal ejecutivo.\n"
+            "• `/exportar` - Descarga tu historial completo en CSV.\n"
+            "• `/sincronizar` - Sincroniza inmediatamente nuevos entrenamientos anotados.\n"
+            "• `/limpiar` - Reinicia la memoria conversacional activa para iniciar una nueva charla.\n"
+            "• `/estadisticas` - Consulta el volumen de registros guardados y fechas.\n"
+            "• `/ayuda` - Muestra esta ayuda."
         )
         await self._safe_reply(update.message, help_text)
 
     async def _handle_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /stats."""
+        """Command /estadisticas (alias /stats)."""
         if not self._is_authorized(update):
             return
 
@@ -552,13 +561,13 @@ class GymTelegramBot:
         await self._safe_reply(update.message, stats_text)
 
     async def _handle_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /sync para sincronización bajo demanda."""
+        """Command /sincronizar (alias /sync) for on-demand synchronization."""
         if not self._is_authorized(update):
             return
 
         status_msg = await update.message.reply_text("🔄 Sincronizando entrenamientos desde Telegram...")
         try:
-            # Ejecuta la sincronización efímera MTProto
+            # Runs the ephemeral MTProto sync
             new_msgs, total_msgs = await self.reader.sync_channel()
             msg_text = (
                 f"✅ *Sincronización exitosa*\n\n"
@@ -567,11 +576,11 @@ class GymTelegramBot:
             )
             await self._safe_edit(status_msg, msg_text)
         except Exception as e:
-            logger.error("Error durante sincronización en el bot: %s", e)
+            logger.error("Error during sync in the bot: %s", e)
             await status_msg.edit_text(f"❌ Error al sincronizar: {str(e)}")
 
     async def _handle_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /clear o /reset: limpia la memoria activa sin borrar el historial permanente."""
+        """Command /limpiar (aliases /clear, /reset): clears active memory without deleting the permanent history."""
         if not self._is_authorized(update):
             return
 
@@ -580,7 +589,7 @@ class GymTelegramBot:
         await self._safe_reply(update.message, "Memoria reiniciada")
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Procesa preguntas ordinarias de texto enviándolas a Gemini."""
+        """Processes ordinary text questions by sending them to the model."""
         if not self._is_authorized(update):
             return
 
@@ -589,7 +598,7 @@ class GymTelegramBot:
             return
 
         async with _send_typing_action(update.message.chat):
-            # Sincronización desacoplada en segundo plano (0 ms de latencia para el usuario)
+            # Decoupled background sync (0 ms latency for the user)
             asyncio.create_task(self._background_sync_safe())
 
             user_id = str(update.effective_user.id)
@@ -598,7 +607,7 @@ class GymTelegramBot:
             placeholder = await update.message.reply_text("✍️ ...")
             full_text = ""
             last_edit_time = time.monotonic()
-            edit_interval = 0.8  # Respetar rate limits de Telegram (~1 edit por segundo)
+            edit_interval = 0.8  # Respect Telegram rate limits (~1 edit per second)
 
             try:
                 async for chunk in self.analyzer.analyze_query_stream_async(
@@ -617,19 +626,19 @@ class GymTelegramBot:
 
                 final_text = full_text.strip() or "No se obtuvo respuesta del modelo."
 
-                # Guardamos en la sesión activa
+                # Store in the active session
                 self.database.add_conversation_message(user_id, "user", user_text)
                 self.database.add_conversation_message(user_id, "model", final_text)
 
-                # Si excede el tamaño máximo de mensaje, editamos el primero y enviamos los restantes
+                # If it exceeds the max message size, edit the first and send the rest
                 chunks = _split_long_message(final_text)
                 await self._safe_edit(placeholder, chunks[0])
                 for extra_chunk in chunks[1:]:
                     await self._safe_reply(update.message, extra_chunk)
 
             except Exception as e:
-                logger.error("Error en streaming con Gemini: %s", e)
-                # Fallback seguro con ejecución síncrona
+                logger.error("Error streaming with the model: %s", e)
+                # Safe fallback using synchronous execution
                 loop = asyncio.get_running_loop()
                 try:
                     fallback_resp = await loop.run_in_executor(
@@ -643,7 +652,7 @@ class GymTelegramBot:
                 await self._safe_edit(placeholder, fallback_resp)
 
     async def _handle_voice_or_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Procesa mensajes de voz o archivos de audio transcribiéndolos y respondiendo."""
+        """Processes voice messages or audio files by transcribing and answering them."""
         if not self._is_authorized(update):
             return
 
@@ -652,13 +661,17 @@ class GymTelegramBot:
         if not voice_or_audio:
             return
 
+        if voice_or_audio.file_size and voice_or_audio.file_size > MAX_ATTACHMENT_BYTES:
+            await message.reply_text("❌ El audio supera el límite de 20 MB permitido por Telegram.")
+            return
+
         async with _send_typing_action(message.chat):
             try:
                 file_obj = await context.bot.get_file(voice_or_audio.file_id)
                 audio_bytearray = await file_obj.download_as_bytearray()
                 audio_bytes = bytes(audio_bytearray)
             except Exception as e:
-                logger.error("Error al descargar archivo de audio: %s", e)
+                logger.error("Error downloading audio file: %s", e)
                 await message.reply_text("❌ No se pudo descargar el audio para su transcripción.")
                 return
 
@@ -672,7 +685,7 @@ class GymTelegramBot:
             try:
                 transcription = await loop.run_in_executor(None, self.analyzer.transcribe_audio, audio_bytes, mime_type)
             except Exception as e:
-                logger.error("Error transcribiendo audio con Gemini: %s", e)
+                logger.error("Error transcribing audio with the model: %s", e)
                 await message.reply_text(f"❌ Error al transcribir el audio: {str(e)}")
                 return
 
@@ -681,17 +694,17 @@ class GymTelegramBot:
                 await message.reply_text("⚠️ No se detectó ninguna voz comprensible en el mensaje de audio.")
                 return
 
-            # Sincronización desacoplada en segundo plano (0 ms de latencia)
+            # Decoupled background sync (0 ms latency)
             asyncio.create_task(self._background_sync_safe())
 
             user_id = str(update.effective_user.id)
             active_memory = self.database.get_active_memory(user_id, limit=8)
 
-            # Analizamos la consulta transcrita con streaming incremental (igual que el texto)
+            # Analyze the transcribed query with incremental streaming (same as text)
             placeholder = await message.reply_text("✍️ ...")
             full_text = ""
             last_edit_time = time.monotonic()
-            edit_interval = 0.8  # Respetar rate limits de Telegram (~1 edit por segundo)
+            edit_interval = 0.8  # Respect Telegram rate limits (~1 edit per second)
 
             try:
                 async for chunk in self.analyzer.analyze_query_stream_async(
@@ -710,7 +723,7 @@ class GymTelegramBot:
 
                 final_text = full_text.strip() or "No se obtuvo respuesta del modelo."
 
-                # Guardamos en el historial persistente de la sesión
+                # Store in the session's persistent history
                 self.database.add_conversation_message(user_id, "user", transcription)
                 self.database.add_conversation_message(user_id, "model", final_text)
 
@@ -720,8 +733,8 @@ class GymTelegramBot:
                     await self._safe_reply(message, extra_chunk)
 
             except Exception as e:
-                logger.error("Error en streaming de voz: %s", e)
-                # Fallback seguro con ejecución síncrona
+                logger.error("Error streaming voice: %s", e)
+                # Safe fallback using synchronous execution
                 try:
                     response_text = await loop.run_in_executor(
                         None,
@@ -734,7 +747,7 @@ class GymTelegramBot:
                 await self._safe_edit(placeholder, response_text)
 
     async def _handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Procesa fotos enviadas por el usuario y las analiza con Gemini respetando el contexto."""
+        """Processes user-sent photos and analyzes them with the model respecting context."""
         if not self._is_authorized(update):
             return
 
@@ -743,17 +756,20 @@ class GymTelegramBot:
             return
 
         async with _send_typing_action(message.chat):
-            # Sincronización desacoplada en segundo plano (0 ms de latencia)
+            # Decoupled background sync (0 ms latency)
             asyncio.create_task(self._background_sync_safe())
 
-            # La foto con el índice -1 contiene la mayor resolución
+            # Index -1 holds the highest resolution photo
             photo_obj = message.photo[-1]
+            if photo_obj.file_size and photo_obj.file_size > MAX_ATTACHMENT_BYTES:
+                await message.reply_text("❌ La imagen supera el límite de 20 MB permitido por Telegram.")
+                return
             try:
                 file_obj = await context.bot.get_file(photo_obj.file_id)
                 img_bytearray = await file_obj.download_as_bytearray()
                 img_bytes = bytes(img_bytearray)
             except Exception as e:
-                logger.error("Error al descargar foto en Telegram: %s", e)
+                logger.error("Error downloading photo from Telegram: %s", e)
                 await message.reply_text("❌ No se pudo descargar la imagen para su análisis.")
                 return
 
@@ -778,7 +794,7 @@ class GymTelegramBot:
                     ),
                 )
             except Exception as e:
-                logger.error("Error analizando foto con Gemini: %s", e)
+                logger.error("Error analyzing photo with the model: %s", e)
                 response_text = f"❌ Ocurrió un error al procesar tu imagen: {str(e)}"
 
             self.database.add_conversation_message(user_id, "user", f"[Imagen adjunta] {user_query}")
@@ -792,7 +808,7 @@ class GymTelegramBot:
                     await message.reply_text(chunk)
 
     async def _handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Procesa documentos (PDF, TXT, CSV, imágenes enviadas como archivo sin comprimir, etc.)."""
+        """Processes documents (PDF, TXT, CSV, images sent as uncompressed files, etc.)."""
         if not self._is_authorized(update):
             return
 
@@ -801,12 +817,12 @@ class GymTelegramBot:
         if not doc:
             return
 
-        if doc.file_size and doc.file_size > 20 * 1024 * 1024:
+        if doc.file_size and doc.file_size > MAX_ATTACHMENT_BYTES:
             await message.reply_text("❌ El archivo supera el límite de 20 MB permitido por Telegram.")
             return
 
         async with _send_typing_action(message.chat):
-            # Sincronización desacoplada en segundo plano (0 ms de latencia)
+            # Decoupled background sync (0 ms latency)
             asyncio.create_task(self._background_sync_safe())
 
             file_name = doc.file_name or "documento"
@@ -820,7 +836,7 @@ class GymTelegramBot:
                 doc_bytearray = await file_obj.download_as_bytearray()
                 doc_bytes = bytes(doc_bytearray)
             except Exception as e:
-                logger.error("Error al descargar documento en Telegram: %s", e)
+                logger.error("Error downloading document from Telegram: %s", e)
                 await message.reply_text(f"❌ No se pudo descargar el archivo '{file_name}'.")
                 return
 
@@ -845,7 +861,7 @@ class GymTelegramBot:
                     ),
                 )
             except Exception as e:
-                logger.error("Error analizando documento con Gemini: %s", e)
+                logger.error("Error analyzing document with the model: %s", e)
                 response_text = f"❌ Ocurrió un error al procesar el archivo '{file_name}': {str(e)}"
 
             self.database.add_conversation_message(user_id, "user", f"[Archivo: {file_name}] {user_query}")
@@ -859,25 +875,53 @@ class GymTelegramBot:
                     await message.reply_text(chunk)
 
     async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Captura y registra excepciones no controladas o fallos transitorios de red."""
-        logger.error("Excepción en bot de Telegram: %s", context.error)
+        """Captures and logs unhandled exceptions or transient network failures."""
+        logger.error("Exception in Telegram bot: %s", context.error)
+
+    async def _post_init(self, application: Application) -> None:
+        """Registers the bot command menu shown in Telegram clients."""
+        commands = [
+            ("inicio", "Inicia el bot y muestra el menú principal"),
+            ("menu", "Menú de acciones rápidas"),
+            ("grafico", "Gráfica de progreso (peso corporal o ejercicio)"),
+            ("macros", "Macros y calorías de hoy o de una fecha"),
+            ("proxima", "Carga sugerida para el próximo entrenamiento"),
+            ("semana", "Resumen semanal ejecutivo"),
+            ("estadisticas", "Estadísticas de la base de datos"),
+            ("sincronizar", "Sincroniza nuevos entrenamientos ahora"),
+            ("exportar", "Exporta tu historial completo a CSV"),
+            ("limpiar", "Reinicia la memoria conversacional activa"),
+            ("ayuda", "Ayuda y ejemplos de consultas"),
+        ]
+        await application.bot.set_my_commands(commands)
 
     def build_application(self) -> Application:
-        """Construye y configura la aplicación de python-telegram-bot."""
+        """Builds and configures the python-telegram-bot application."""
         request = HTTPXRequest(
             connection_pool_size=8,
             connect_timeout=20.0,
             read_timeout=30.0,
             write_timeout=20.0,
         )
-        app = ApplicationBuilder().token(self.settings.TELEGRAM_BOT_TOKEN).request(request).build()
+        app = (
+            ApplicationBuilder()
+            .token(self.settings.TELEGRAM_BOT_TOKEN)
+            .request(request)
+            .post_init(self._post_init)
+            .build()
+        )
 
         app.add_error_handler(self._error_handler)
+        app.add_handler(CommandHandler("inicio", self._handle_start))
         app.add_handler(CommandHandler("start", self._handle_start))
+        app.add_handler(CommandHandler("ayuda", self._handle_help))
         app.add_handler(CommandHandler("help", self._handle_help))
         app.add_handler(CommandHandler("menu", self._handle_menu))
+        app.add_handler(CommandHandler("estadisticas", self._handle_stats))
         app.add_handler(CommandHandler("stats", self._handle_stats))
+        app.add_handler(CommandHandler("sincronizar", self._handle_sync))
         app.add_handler(CommandHandler("sync", self._handle_sync))
+        app.add_handler(CommandHandler("limpiar", self._handle_clear))
         app.add_handler(CommandHandler("clear", self._handle_clear))
         app.add_handler(CommandHandler("reset", self._handle_clear))
         app.add_handler(CommandHandler("grafico", self._handle_chart))
@@ -891,6 +935,7 @@ class GymTelegramBot:
         app.add_handler(CommandHandler("recomendar", self._handle_progression))
         app.add_handler(CommandHandler("semana", self._handle_weekly))
         app.add_handler(CommandHandler("resumen", self._handle_weekly))
+        app.add_handler(CommandHandler("exportar", self._handle_export))
         app.add_handler(CommandHandler("export", self._handle_export))
         app.add_handler(CommandHandler("backup", self._handle_export))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
@@ -903,7 +948,7 @@ class GymTelegramBot:
         return app
 
     def run(self) -> None:
-        """Inicia el bot en modo polling continuo."""
-        logger.info("Iniciando servicio de bot secundario de Telegram...")
+        """Starts the bot in continuous polling mode."""
+        logger.info("Starting secondary Telegram bot service...")
         app = self.build_application()
         app.run_polling(drop_pending_updates=True)

@@ -1,1 +1,1 @@
-"""Suite de pruebas unitarias para GymBot."""
+"""GymBot unit test suite."""

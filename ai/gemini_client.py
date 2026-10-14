@@ -1,4 +1,4 @@
-"""Cliente de Google GenAI usando el SDK oficial (google-genai) para gemini-2.5-flash."""
+"""Google GenAI client using the official SDK (google-genai) for gemini-2.5-flash."""
 
 import asyncio
 import logging
@@ -13,23 +13,23 @@ from config.settings import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
-# Modelos candidatos en orden de prioridad (verificados con la API key actual).
-# Los modelos NO-lite (gemini-3.5-flash, gemini-flash-latest) devuelven 503 UNAVAILABLE
-# de forma consistente y se excluyeron tras las pruebas de latencia (octubre 2026).
+# Candidate models in priority order (verified with the current API key).
+# NON-lite models (gemini-3.5-flash, gemini-flash-latest) return 503 UNAVAILABLE
+# consistently and were excluded after latency tests (October 2026).
 _FALLBACK_MODELS = (
-    "gemini-flash-lite-latest",  # Apunta siempre a la última versión lite estable
+    "gemini-flash-lite-latest",  # Always points to the latest stable lite version
 )
-RATE_LIMIT_BACKOFF = 2.0  # Segundos de espera ante un error 429 (rate limit del Free Tier)
-MAX_GLOBAL_PASSES = 2  # Número máximo de pasadas completas sobre la lista de modelos
+RATE_LIMIT_BACKOFF = 2.0  # Seconds to wait on a 429 error (Free Tier rate limit)
+MAX_GLOBAL_PASSES = 2  # Maximum number of full passes over the model list
 
 
 def _is_rate_limit(error: APIError) -> bool:
-    """True si el error de Gemini es 429 (límite de peticiones del Free Tier)."""
+    """True if the Gemini error is 429 (Free Tier request limit)."""
     return str(getattr(error, "code", "")) == "429"
 
 
 class GeminiClient:
-    """Cliente para interactuar con Gemini optimizado para el Free Tier."""
+    """Client to interact with Gemini optimized for the Free Tier."""
 
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
@@ -37,13 +37,13 @@ class GeminiClient:
         self.model_name = self.settings.GEMINI_MODEL
 
         if not self.api_key:
-            raise ValueError("GEMINI_API_KEY no está configurada en las variables de entorno (.env).")
+            raise ValueError("GEMINI_API_KEY is not set in the environment variables (.env).")
 
-        # Inicialización del cliente oficial google-genai
+        # Official google-genai client initialization
         self.client = genai.Client(api_key=self.api_key)
 
     def _build_candidate_models(self) -> list[str]:
-        """Construye la lista de modelos candidatos sin duplicados."""
+        """Build the list of candidate models without duplicates."""
         seen: set[str] = set()
         candidates: list[str] = []
         for m in (self.model_name, *_FALLBACK_MODELS):
@@ -59,12 +59,12 @@ class GeminiClient:
         attachments: list[tuple[bytes, str]] | None = None,
         temperature: float = 0.2,
     ) -> str:
-        """Envía una solicitud a Gemini con fallback inmediato entre modelos y reintentos globales.
+        """Send a request to Gemini with immediate fallback between models and global retries.
 
-        Estrategia:
-        - 1 intento por modelo → si falla, pasa al siguiente inmediatamente.
-        - Si todos los modelos fallan en una pasada, espera 2 s y repite (máx. MAX_GLOBAL_PASSES).
-        - Sin espera dentro de cada modelo; el tiempo se pierde sólo entre pasadas globales.
+        Strategy:
+        - 1 attempt per model → if it fails, move to the next one immediately.
+        - If all models fail in a pass, wait 2 s and repeat (max. MAX_GLOBAL_PASSES).
+        - No wait within each model; time is lost only between global passes.
         """
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
@@ -100,13 +100,13 @@ class GeminiClient:
                     last_error = e
                     if _is_rate_limit(e):
                         logger.warning(
-                            "Rate limit (429) en '%s'. Esperando %.1f s antes de continuar...",
+                            "Rate limit (429) on '%s'. Waiting %.1f s before continuing...",
                             current_model,
                             RATE_LIMIT_BACKOFF,
                         )
                         time.sleep(RATE_LIMIT_BACKOFF)
                     logger.warning(
-                        "Modelo '%s' falló (pasada %d/%d, código %s). Probando siguiente...",
+                        "Model '%s' failed (pass %d/%d, code %s). Trying the next one...",
                         current_model,
                         pass_num,
                         MAX_GLOBAL_PASSES,
@@ -115,30 +115,30 @@ class GeminiClient:
                 except Exception as e:
                     last_error = e
                     logger.warning(
-                        "Excepción inesperada en '%s' (pasada %d/%d): %s. Probando siguiente...",
+                        "Unexpected exception in '%s' (pass %d/%d): %s. Trying the next one...",
                         current_model,
                         pass_num,
                         MAX_GLOBAL_PASSES,
                         e,
                     )
 
-            # Todos los modelos fallaron en esta pasada
+            # All models failed in this pass
             if pass_num < MAX_GLOBAL_PASSES:
                 logger.warning(
-                    "Todos los modelos fallaron en la pasada %d/%d. Reintentando en 2 s...",
+                    "All models failed in pass %d/%d. Retrying in 2 s...",
                     pass_num,
                     MAX_GLOBAL_PASSES,
                 )
                 time.sleep(2.0)
 
-        raise RuntimeError(f"Fallo al invocar Gemini con modelos {candidate_models}: {last_error}")
+        raise RuntimeError(f"Failed to invoke Gemini with models {candidate_models}: {last_error}")
 
     def transcribe_audio(
         self,
         audio_bytes: bytes,
         mime_type: str = "audio/ogg",
     ) -> str:
-        """Transcribe un archivo de audio a texto usando Gemini con fallback inmediato."""
+        """Transcribe an audio file to text using Gemini with immediate fallback."""
         clean_mime = mime_type.split(";")[0].strip().lower()
         if clean_mime in ("audio/oga", "audio/opus"):
             clean_mime = "audio/ogg"
@@ -167,13 +167,13 @@ class GeminiClient:
                     last_error = e
                     if _is_rate_limit(e):
                         logger.warning(
-                            "Rate limit (429) al transcribir con '%s'. Esperando %.1f s...",
+                            "Rate limit (429) while transcribing with '%s'. Waiting %.1f s...",
                             current_model,
                             RATE_LIMIT_BACKOFF,
                         )
                         time.sleep(RATE_LIMIT_BACKOFF)
                     logger.warning(
-                        "Modelo '%s' falló al transcribir (pasada %d/%d, código %s). Probando siguiente...",
+                        "Model '%s' failed while transcribing (pass %d/%d, code %s). Trying the next one...",
                         current_model,
                         pass_num,
                         MAX_GLOBAL_PASSES,
@@ -182,7 +182,7 @@ class GeminiClient:
                 except Exception as e:
                     last_error = e
                     logger.warning(
-                        "Excepción inesperada al transcribir con '%s' (pasada %d/%d): %s. Probando siguiente...",
+                        "Unexpected exception while transcribing with '%s' (pass %d/%d): %s. Trying the next one...",
                         current_model,
                         pass_num,
                         MAX_GLOBAL_PASSES,
@@ -191,13 +191,13 @@ class GeminiClient:
 
             if pass_num < MAX_GLOBAL_PASSES:
                 logger.warning(
-                    "Todos los modelos fallaron al transcribir (pasada %d/%d). Reintentando en 2 s...",
+                    "All models failed while transcribing (pass %d/%d). Retrying in 2 s...",
                     pass_num,
                     MAX_GLOBAL_PASSES,
                 )
                 time.sleep(2.0)
 
-        raise RuntimeError(f"Fallo al transcribir audio con modelos {candidate_models}: {last_error}")
+        raise RuntimeError(f"Failed to transcribe audio with models {candidate_models}: {last_error}")
 
     async def generate_response_stream_async(
         self,
@@ -206,10 +206,10 @@ class GeminiClient:
         attachments: list[tuple[bytes, str]] | None = None,
         temperature: float = 0.2,
     ) -> AsyncGenerator[str, None]:
-        """Genera respuesta en streaming asíncrono con fallback inmediato entre modelos.
+        """Generate a response in asynchronous streaming with immediate fallback between models.
 
-        Estrategia idéntica a generate_response: 1 intento por modelo, sin esperas dentro
-        de la pasada, MAX_GLOBAL_PASSES pasadas completas antes de rendirse.
+        Strategy identical to generate_response: 1 attempt per model, no waits within
+        the pass, MAX_GLOBAL_PASSES full passes before giving up.
         """
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
@@ -242,22 +242,22 @@ class GeminiClient:
                         if chunk.text:
                             yielded_any = True
                             yield chunk.text
-                    return  # Éxito: salir completamente
+                    return  # Success: exit completely
                 except APIError as e:
                     last_error = e
                     if yielded_any:
-                        # Ya emitimos tokens parciales, no podemos recuperarnos
-                        logger.error("Error de API intermedio tras emitir tokens con '%s': %s", current_model, e)
+                        # We already emitted partial tokens, we cannot recover
+                        logger.error("Intermediate API error after emitting tokens with '%s': %s", current_model, e)
                         return
                     if _is_rate_limit(e):
                         logger.warning(
-                            "Rate limit (429) en streaming con '%s'. Esperando %.1f s...",
+                            "Rate limit (429) in streaming with '%s'. Waiting %.1f s...",
                             current_model,
                             RATE_LIMIT_BACKOFF,
                         )
                         await asyncio.sleep(RATE_LIMIT_BACKOFF)
                     logger.warning(
-                        "Modelo '%s' falló en streaming (pasada %d/%d, código %s). Probando siguiente...",
+                        "Model '%s' failed in streaming (pass %d/%d, code %s). Trying the next one...",
                         current_model,
                         pass_num,
                         MAX_GLOBAL_PASSES,
@@ -266,10 +266,12 @@ class GeminiClient:
                 except Exception as e:
                     last_error = e
                     if yielded_any:
-                        logger.error("Fallo de conexión intermedio tras emitir tokens con '%s': %s", current_model, e)
+                        logger.error(
+                            "Intermediate connection failure after emitting tokens with '%s': %s", current_model, e
+                        )
                         return
                     logger.warning(
-                        "Excepción inesperada en streaming con '%s' (pasada %d/%d): %s. Probando siguiente...",
+                        "Unexpected exception in streaming with '%s' (pass %d/%d): %s. Trying the next one...",
                         current_model,
                         pass_num,
                         MAX_GLOBAL_PASSES,
@@ -278,14 +280,14 @@ class GeminiClient:
 
             if pass_num < MAX_GLOBAL_PASSES and not yielded_any:
                 logger.warning(
-                    "Todos los modelos fallaron en streaming (pasada %d/%d). Reintentando en 2 s...",
+                    "All models failed in streaming (pass %d/%d). Retrying in 2 s...",
                     pass_num,
                     MAX_GLOBAL_PASSES,
                 )
                 await asyncio.sleep(2.0)
 
-        # Fallback síncrono si el streaming falló por completo sin emitir nada
+        # Synchronous fallback if streaming failed completely without emitting anything
         if not yielded_any:
-            logger.warning("Streaming no disponible. Recurriendo a generación síncrona: %s", last_error)
+            logger.warning("Streaming unavailable. Falling back to synchronous generation: %s", last_error)
             fallback_text = self.generate_response(prompt, system_instruction, attachments, temperature)
             yield fallback_text

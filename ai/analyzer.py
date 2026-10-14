@@ -1,4 +1,4 @@
-"""Motor de análisis de entrenamientos y generación de contexto para GymBot."""
+"""Workout analysis engine and context generation for GymBot."""
 
 import asyncio
 import logging
@@ -17,12 +17,12 @@ from .router import GROUPS, QueryRoute, classify_query, resolve_group_targets
 
 logger = logging.getLogger(__name__)
 
-# Los registros y tareas programadas se interpretan en horario del atleta.
+# Records and scheduled tasks are interpreted in the athlete's timezone.
 ATLETA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
-# Fecha explícita escrita dentro del texto (dd/mm/yy, dd/mm/yyyy o dd-mm...).
+# Explicit date written inside the text (dd/mm/yy, dd/mm/yyyy or dd-mm...).
 _TEXT_DATE_RE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b")
-# Par (fecha, peso kg) dentro de mensajes de PesoCorporal.
+# (date, weight kg) pair inside PesoCorporal messages.
 _PESO_RE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b[^\d]*?([0-9]+(?:[.,][0-9]+)?)\s*kg", re.IGNORECASE)
 
 FITNESS_COACH_SYSTEM_INSTRUCTION = """
@@ -39,7 +39,7 @@ DIRECTIVAS ESENCIALES:
 
 
 class GymAnalyzer:
-    """Orquestador del análisis de entrenamientos (contexto local + enrutador LLM + SQLite)."""
+    """Workout analysis orchestrator (local context + LLM router + SQLite)."""
 
     def __init__(
         self,
@@ -50,7 +50,7 @@ class GymAnalyzer:
     ):
         self.settings = settings or get_settings()
         self.database = database or GymDatabase(self.settings.DATABASE_PATH)
-        # La interfaz de LLMClient coincide con la de GeminiClient (duck typing).
+        # The LLMClient interface matches GeminiClient's (duck typing).
         self.llm_client = llm_client or gemini_client or LLMClient(self.settings)
         self._cached_context: str | None = None
         self._cached_total_messages: int = -1
@@ -58,7 +58,7 @@ class GymAnalyzer:
 
     @staticmethod
     def _now() -> datetime:
-        """Hora actual en el huso horario del atleta."""
+        """Current time in the athlete's timezone."""
         return datetime.now(ATLETA_TZ)
 
     def build_workout_context(
@@ -67,8 +67,8 @@ class GymAnalyzer:
         until: datetime | None = None,
         limit: int | None = None,
     ) -> str:
-        """Extrae y formatea el historial de entrenamientos en orden cronológico (con caché en RAM)."""
-        # Si es la consulta general completa, usamos caché en memoria RAM para máxima velocidad
+        """Extracts and formats the workout history in chronological order (RAM-cached)."""
+        # For the full general query, use the in-memory cache for maximum speed
         if since is None and until is None and limit is None:
             stats = self.database.get_stats()
             if (
@@ -91,7 +91,7 @@ class GymAnalyzer:
             since=since,
             until=until,
             limit=limit,
-            reverse=False,  # Cronológico (antiguo a reciente)
+            reverse=False,  # Chronological (oldest to newest)
         )
 
         if not messages:
@@ -104,13 +104,11 @@ class GymAnalyzer:
         return "\n".join(context_lines)
 
     def _fetch_group_messages(self, group: str, since: datetime | None) -> list[RawMessage]:
-        """Trae los mensajes de un grupo resolviendo sus títulos/IDs de forma aislada."""
+        """Fetches a group's messages resolving its titles/IDs in isolation."""
         titles, chat_ids = resolve_group_targets([group], self.settings)
-        # PesoCorporal suele agrupar varios pesajes por mensaje: se trae completo (son pocos).
+        # PesoCorporal usually groups several weigh-ins per message: fetched in full (few of them).
         group_since = None if group == "PesoCorporal" else since
-        return self.database.get_messages(
-            since=group_since, titles=titles, chat_ids=chat_ids, reverse=False
-        )
+        return self.database.get_messages(since=group_since, titles=titles, chat_ids=chat_ids, reverse=False)
 
     def build_focused_context(
         self,
@@ -118,11 +116,11 @@ class GymAnalyzer:
         groups: list[str] | None = None,
         days_lookback: int = 0,
     ) -> str:
-        """Extrae solo los registros relevantes (grupos + ventana temporal) para la consulta.
+        """Extracts only the records relevant to the query (groups + time window).
 
-        Cada grupo se resuelve por separado (para no mezclar conteos ni ventanas). Con
-        `days_lookback > 0` la ventana es estricta. Con `days_lookback == 0` y sin
-        coincidencias se recurre al historial completo (mensajes legados sin mapeo).
+        Each group is resolved separately (to avoid mixing counts or windows). With
+        `days_lookback > 0` the window is strict. With `days_lookback == 0` and no
+        matches it falls back to the full history (legacy messages without mapping).
         """
         since = datetime.now(UTC) - timedelta(days=days_lookback) if days_lookback > 0 else None
 
@@ -139,7 +137,7 @@ class GymAnalyzer:
                         messages.append(msg)
             messages.sort(key=lambda m: m.date)
             if not messages and days_lookback == 0:
-                # Mensajes legados sin chat_title: mejor el historial completo que nada.
+                # Legacy messages without chat_title: the full history beats nothing.
                 messages = self.database.get_messages(since=since, reverse=False)
 
         if not messages:
@@ -150,7 +148,7 @@ class GymAnalyzer:
 
     @staticmethod
     def _extract_peso_series(messages: list[RawMessage]) -> list[tuple[date, float]]:
-        """Extrae pares (fecha_real_del_texto, peso_kg) de los mensajes de PesoCorporal."""
+        """Extracts (text_date, weight_kg) pairs from PesoCorporal messages."""
         series: list[tuple[date, float]] = []
         for msg in messages:
             for match in _PESO_RE.finditer(msg.text):
@@ -165,10 +163,10 @@ class GymAnalyzer:
         return series
 
     def _build_context_stats(self, groups: list[str] | None = None) -> str:
-        """Resumen por grupo (conteo real) resolviendo cada grupo por separado.
+        """Per-group summary (real count) resolving each group separately.
 
-        Para PesoCorporal, extrae todos los pares fecha↔peso escritos en el texto y
-        reporta primer/último peso real con su delta en kg.
+        For PesoCorporal, extracts every date↔weight pair written in the text and
+        reports the first/last real weight with its delta in kg.
         """
         lines: list[str] = []
         for group in groups or list(GROUPS):
@@ -188,7 +186,7 @@ class GymAnalyzer:
         return "\n".join(lines)
 
     def get_system_instruction(self) -> str:
-        """Construye la instrucción del sistema combinando la base deportiva con directivas personalizadas."""
+        """Builds the system instruction combining the sports base with custom directives."""
         base_instruction = FITNESS_COACH_SYSTEM_INSTRUCTION.strip()
         custom_file = Path(__file__).resolve().parent.parent / "custom_instructions.txt"
         if custom_file.exists():
@@ -201,7 +199,7 @@ class GymAnalyzer:
                         f"{custom_text}\n"
                     )
             except Exception as e:
-                logger.warning("No se pudo leer custom_instructions.txt: %s", e)
+                logger.warning("Could not read custom_instructions.txt: %s", e)
         return base_instruction
 
     def _build_prompt(
@@ -210,7 +208,7 @@ class GymAnalyzer:
         route: QueryRoute,
         conversation_history: list[dict] | None,
     ) -> str:
-        """Ensambla el prompt: metadatos, contexto filtrado por ruta, memoria y consulta."""
+        """Assembles the prompt: metadata, route-filtered context, memory and query."""
         stats = self.database.get_stats()
         context_text = self.build_focused_context(question, route.groups, route.days_lookback)
         group_stats = self._build_context_stats(route.groups)
@@ -226,8 +224,8 @@ class GymAnalyzer:
 
         conversation_context = ""
         if conversation_history:
-            # ponytail: cap de memoria (~2400 chars / ~600 tokens) para no desbordar
-            # el umbral Groq de 4200 tokens tras un análisis largo de DeepSeek.
+            # ponytail: memory cap (~2400 chars / ~600 tokens) so a long DeepSeek
+            # analysis does not overflow the Groq 4200-token threshold.
             budget = 2400
             lines: list[str] = []
             for msg in reversed(conversation_history):
@@ -267,7 +265,7 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         route: QueryRoute | None = None,
         attachment_default: bool = False,
     ) -> str:
-        """Combina el historial local, la memoria de conversación y adjuntos con la pregunta."""
+        """Combines local history, conversation memory and attachments with the question."""
         question_clean = user_question.strip()
         if not question_clean:
             return "Por favor ingresa una consulta válida sobre tus entrenamientos."
@@ -276,7 +274,7 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         if stats.total_messages == 0 and not attachments:
             return (
                 "⚠️ La base de datos local está vacía. "
-                "Ejecuta primero una sincronización (`:sync` en la CLI o `/sync` en el bot de Telegram) "
+                "Ejecuta primero una sincronización (`:sync` en la CLI o `/sincronizar` en el bot de Telegram) "
                 "para descargar tus entrenamientos desde el chat."
             )
 
@@ -291,7 +289,7 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
                 route=route,
             )
         except Exception as e:
-            logger.error("Error al procesar consulta con el motor de IA: %s", e)
+            logger.error("Error processing query with the AI engine: %s", e)
             return f"❌ Error al consultar el motor de IA: {e}"
 
     def _resolve_route(
@@ -301,10 +299,10 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         attachments: list[tuple[bytes, str]] | None,
         attachment_default: bool,
     ) -> QueryRoute:
-        """Elige la ruta de contexto. Adjunto sin caption: ventana corta en vez del historial completo."""
+        """Chooses the context route. Attachment with no caption: short window instead of full history."""
         if attachment_default and attachments:
-            # ponytail: evita adjuntar las 93 Sesiones (27k chars) a cada foto/documento
-            # genérico. Subir la ventana si Gemini necesita más contexto visual.
+            # ponytail: avoids attaching all 93 Sesiones (27k chars) to every generic
+            # photo/document. Increase the window if Gemini needs more visual context.
             return QueryRoute(complexity="complex", groups=["Comidas", "PesoCorporal"], days_lookback=3)
         return classify_query(question_clean, self.llm_client, conversation_history)
 
@@ -316,7 +314,7 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         route: QueryRoute | None = None,
         attachment_default: bool = False,
     ) -> AsyncGenerator[str, None]:
-        """Versión en streaming asíncrono de alta velocidad para respuesta inmediata en Telegram."""
+        """High-speed async streaming version for immediate Telegram replies."""
         question_clean = user_question.strip()
         if not question_clean:
             yield "Por favor ingresa una consulta válida sobre tus entrenamientos."
@@ -326,7 +324,7 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         if stats.total_messages == 0 and not attachments:
             yield (
                 "⚠️ La base de datos local está vacía. "
-                "Ejecuta primero una sincronización (`:sync` en la CLI o `/sync` en el bot de Telegram) "
+                "Ejecuta primero una sincronización (`:sync` en la CLI o `/sincronizar` en el bot de Telegram) "
                 "para descargar tus entrenamientos desde el chat."
             )
             return
@@ -345,32 +343,32 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
             yield chunk
 
     def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-        """Transcribe un archivo o nota de voz de audio a texto utilizando Gemini."""
+        """Transcribes an audio file or voice note to text using Gemini."""
         return self.llm_client.transcribe_audio(audio_bytes, mime_type=mime_type)
 
     def analyze_nutrition_today(self) -> str:
-        """Calcula el balance calórico y macronutrientes estimados de las comidas registradas hoy."""
+        """Computes the estimated calorie balance and macros of the meals logged today."""
         return self._analyze_nutrition_for_date(self._now())
 
     def analyze_nutrition_by_date(self, date_str: str) -> str:
-        """Calcula el balance calórico y macronutrientes estimados de las comidas de una fecha dada.
+        """Computes the estimated calorie balance and macros for the meals of a given date.
 
         Args:
-            date_str: Fecha en formatos DD/MM/YYYY, DD-MM-YYYY, DD/MM/YY, DD-MM o DD/MM.
-                      También acepta 'hoy' o 'ayer'.
+            date_str: Date in DD/MM/YYYY, DD-MM-YYYY, DD/MM/YY, DD-MM or DD/MM formats.
+                      Also accepts 'hoy' or 'ayer'.
         """
         date_str = date_str.strip().lower()
 
         if date_str in ("hoy", "today"):
-            target_date = datetime.now()
+            target_date = self._now()
         elif date_str in ("ayer", "yesterday"):
             from datetime import timedelta
 
-            target_date = datetime.now() - timedelta(days=1)
+            target_date = self._now() - timedelta(days=1)
         else:
-            # Intentar parsear varios formatos comunes
+            # Try to parse several common formats
             parsed = None
-            now = datetime.now()
+            now = self._now()
             formats = [
                 "%d/%m/%Y",
                 "%d-%m-%Y",
@@ -382,7 +380,7 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
             for fmt in formats:
                 try:
                     parsed = datetime.strptime(date_str, fmt)
-                    # Si el formato no incluye año, asignamos el año actual
+                    # If the format has no year, assign the current year
                     if fmt in ("%d/%m", "%d-%m"):
                         parsed = parsed.replace(year=now.year)
                     break
@@ -399,7 +397,7 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         return self._analyze_nutrition_for_date(target_date)
 
     def _msg_event_date(self, msg: RawMessage) -> date:
-        """Fecha real de un evento: prioriza la fecha escrita en el texto sobre la de envío."""
+        """Real event date: prioritizes the date written in the text over the send date."""
         match = _TEXT_DATE_RE.search(msg.text)
         if match:
             day, month = int(match.group(1)), int(match.group(2))
@@ -416,14 +414,14 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         return to_atleta_tz(msg.date).date()
 
     def _analyze_nutrition_for_date(self, target_date: datetime) -> str:
-        """Lógica común de análisis nutricional para una fecha concreta."""
+        """Shared nutrition analysis logic for a specific date."""
         target_day = date(target_date.year, target_date.month, target_date.day)
         date_label = target_day.strftime("%d/%m/%Y")
 
-        # Día completo en horario del atleta, convertido a UTC para comparar contra SQLite.
+        # Full day in the athlete's timezone, converted to UTC to compare against SQLite.
         start_utc = datetime(target_day.year, target_day.month, target_day.day, tzinfo=ATLETA_TZ).astimezone(UTC)
         end_utc = start_utc + timedelta(days=1)
-        # Ventana ampliada (+2 días) para no perder registros enviados con retraso.
+        # Extended window (+2 days) to avoid losing delayed records.
         window_end = end_utc + timedelta(days=2)
 
         day_messages = self.database.get_messages(since=start_utc, until=window_end, reverse=False)
@@ -467,16 +465,16 @@ Formato conciso, limpio y profesional. Usa las proporciones y pesos mencionados 
                 system_instruction=self.get_system_instruction(),
             )
         except Exception as e:
-            logger.error("Error al analizar nutrición con el motor de IA: %s", e)
+            logger.error("Error analyzing nutrition with the AI engine: %s", e)
             return f"❌ Error al estimar nutrición: {e}"
 
     def recommend_next_progression(self, exercise_name: str) -> str:
-        """Recomienda la carga y repeticiones para la próxima sesión aplicando doble progresión."""
+        """Recommends load and reps for the next session using double progression."""
         ex_query = exercise_name.strip()
         if not ex_query:
             return "Indica el ejercicio que deseas consultar (por ejemplo: /proxima banca o /proxima prensa)."
 
-        # Buscar mensajes que contengan el ejercicio
+        # Find messages containing the exercise
         matched = self.database.search_messages(ex_query, limit=10)
         if not matched:
             return f"No se encontraron registros previos para '{ex_query}' en tu historial."
@@ -506,11 +504,11 @@ Responde de forma concisa y directa en 1 a 3 oraciones completas y motivantes.
                 system_instruction=self.get_system_instruction(),
             )
         except Exception as e:
-            logger.error("Error al sugerir progresión con Gemini: %s", e)
+            logger.error("Error suggesting progression with Gemini: %s", e)
             return f"❌ Error al consultar la sugerencia de progresión: {e}"
 
     def generate_weekly_summary(self) -> str:
-        """Genera un reporte ejecutivo semanal de los últimos 7 días."""
+        """Generates a weekly executive report for the last 7 days."""
         groups = list(GROUPS)
         context_text = self.build_focused_context("resumen semanal", groups, days_lookback=7)
         if context_text.startswith("NO HAY REGISTROS"):
@@ -542,5 +540,5 @@ Estructura la respuesta de manera clara, concisa y profesional (3 a 5 párrafos 
                 route=QueryRoute(complexity="complex", groups=groups, days_lookback=7),
             )
         except Exception as e:
-            logger.error("Error al generar resumen semanal con Gemini: %s", e)
+            logger.error("Error generating weekly summary with Gemini: %s", e)
             return f"❌ Error al generar resumen semanal: {e}"

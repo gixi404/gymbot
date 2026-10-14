@@ -1,11 +1,11 @@
-"""Clasificador de consultas (Nivel 1) y resolución de grupos lógicos (Nivel 2).
+"""Query classifier (Level 1) and logical group resolution (Level 2).
 
-El clasificador decide, con un modelo diminuto y barato (llama-3.1-8b-instant vía
-Groq), qué hay que mirar ANTES de tocar SQLite: complejidad, grupos implicados y
-ventana de días. Así la extracción de contexto solo recupera lo necesario.
+The classifier decides, with a tiny and cheap model (llama-3.1-8b-instant via
+Groq), what to look at BEFORE touching SQLite: complexity, groups involved and
+day window. That way context extraction only retrieves what is needed.
 
-Si el clasificador falla, da timeout o devuelve algo inválido, se aplica un
-fallback seguro: análisis completo (todos los grupos, todo el historial).
+If the classifier fails, times out or returns something invalid, a safe
+fallback is applied: full analysis (all groups, all history).
 """
 
 import json
@@ -14,15 +14,15 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-if TYPE_CHECKING:  # evita importación circular; solo se usa para tipado
+if TYPE_CHECKING:  # avoids circular import; only used for typing
     from config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-# Grupos/tópicos lógicos del diario de entrenamientos del atleta.
+# Logical groups/topics of the athlete's training log.
 GROUPS: tuple[str, ...] = ("Sesiones", "Cardio", "Comidas", "PesoCorporal")
 
-# Grupo al que se atribuyen los mensajes antiguos sin chat_title (ver resolve_group_targets).
+# Group to which old messages without chat_title are attributed (see resolve_group_targets).
 DEFAULT_GROUP = "Sesiones"
 
 CLASSIFIER_SYSTEM_PROMPT = """Clasifica consultas de un atleta sobre su registro de entrenamientos.
@@ -54,7 +54,7 @@ Ejemplo: {"complexity": "complex", "groups": ["Sesiones", "PesoCorporal"], "days
 
 
 class QueryRoute(BaseModel):
-    """Ruta decidida por el clasificador para una consulta del atleta."""
+    """Route decided by the classifier for an athlete query."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -65,7 +65,7 @@ class QueryRoute(BaseModel):
     @field_validator("groups", mode="before")
     @classmethod
     def _normalize_groups(cls, v: object) -> list[str]:
-        """Conserva solo nombres de grupo válidos (sin distinguir mayúsculas)."""
+        """Keep only valid group names (case-insensitive)."""
         if not isinstance(v, (list, tuple, set)):
             return []
         out: list[str] = []
@@ -87,19 +87,19 @@ class QueryRoute(BaseModel):
     @field_validator("groups", mode="after")
     @classmethod
     def _ensure_groups(cls, v: list[str]) -> list[str]:
-        """Una lista vacía se interpreta como "todos los grupos" (fallback seguro)."""
+        """An empty list is interpreted as "all groups" (safe fallback)."""
         return v or list(GROUPS)
 
 
 def fallback_route() -> QueryRoute:
-    """Ruta segura cuando el clasificador no está disponible: análisis completo."""
+    """Safe route when the classifier is unavailable: full analysis."""
     return QueryRoute(complexity="complex", groups=list(GROUPS), days_lookback=0)
 
 
 def _classification_input(question: str, conversation_history: list[dict] | None) -> str:
-    """Antepone los últimos turnos (resumidos) para resolver referencias implícitas.
+    """Prepend the last turns (summarized) to resolve implicit references.
 
-    Sin historial devuelve la pregunta tal cual (comportamiento histórico).
+    Without history it returns the question as-is (legacy behavior).
     """
     if not conversation_history:
         return question
@@ -115,12 +115,12 @@ def classify_query(
     llm_client: object | None = None,
     conversation_history: list[dict] | None = None,
 ) -> QueryRoute:
-    """Clasifica la consulta en complejidad/grupos/ventana temporal.
+    """Classify the query into complexity/groups/time window.
 
-    `llm_client` solo necesita exponer `generate_json(prompt, system_instruction)`.
-    `conversation_history` (opcional) aporta los últimos turnos para resolver
-    referencias implícitas en la pregunta actual.
-    Ante cualquier fallo (red, timeout, modelo caído o JSON inválido) devuelve
+    `llm_client` only needs to expose `generate_json(prompt, system_instruction)`.
+    `conversation_history` (optional) provides the last turns to resolve
+    implicit references in the current question.
+    On any failure (network, timeout, model down or invalid JSON) it returns
     `fallback_route()`.
     """
     if llm_client is None:
@@ -132,26 +132,26 @@ def classify_query(
         )
         data = json.loads(raw)
         if not isinstance(data, dict):
-            raise ValueError(f"Respuesta del clasificador no es un objeto JSON: {raw[:200]}")
+            raise ValueError(f"Classifier response is not a JSON object: {raw[:200]}")
         route = QueryRoute.model_validate(data)
         logger.debug(
-            "Ruta clasificada: complexity=%s groups=%s days_lookback=%s",
+            "Classified route: complexity=%s groups=%s days_lookback=%s",
             route.complexity,
             route.groups,
             route.days_lookback,
         )
         return route
-    except Exception as e:  # noqa: BLE001 - el fallback seguro es el comportamiento esperado
-        logger.warning("Clasificador no disponible (%s). Usando análisis completo.", e)
+    except Exception as e:  # noqa: BLE001 - the safe fallback is the expected behavior
+        logger.warning("Classifier unavailable (%s). Using full analysis.", e)
         return fallback_route()
 
 
 def resolve_group_targets(groups: list[str], settings: "Settings | None" = None) -> tuple[list[str], list[str]]:
-    """Traduce grupos lógicos a (títulos de chat, IDs de chat) para filtrar en SQLite.
+    """Translate logical groups into (chat titles, chat IDs) to filter in SQLite.
 
-    Los mensajes antiguos de la BD carecen de `chat_title`, por lo que además del
-    nombre del grupo se aceptan las entradas configuradas en `GROUP_CHAT_MAP`
-    (IDs numéricos o títulos alternativos, ej. "GYM").
+    Old messages in the DB lack `chat_title`, so in addition to the group
+    name, the entries configured in `GROUP_CHAT_MAP` are accepted
+    (numeric IDs or alternative titles, e.g. "GYM").
     """
     if not groups:
         return [], []
@@ -167,16 +167,16 @@ def resolve_group_targets(groups: list[str], settings: "Settings | None" = None)
             candidate = str(entry).strip()
             if not candidate:
                 continue
-            names.add(candidate.lower())  # título alternativo (comparación insensible a mayúsculas)
+            names.add(candidate.lower())  # alternative title (case-insensitive comparison)
             if candidate not in chat_ids:
-                chat_ids.append(candidate)  # por si es un ID de chat
+                chat_ids.append(candidate)  # in case it is a chat ID
         if group == DEFAULT_GROUP:
-            # Los mensajes antiguos de la BD no tienen chat_title: se atribuyen al
-            # grupo principal, que es donde vive el grueso del diario.
+            # Old messages in the DB have no chat_title: they are attributed to the
+            # main group, which is where the bulk of the log lives.
             names.add("")
         for name in names:
             if name not in titles:
                 titles.append(name)
 
-    logger.debug("Grupos %s resueltos a títulos=%s chat_ids=%s", wanted, titles, chat_ids)
+    logger.debug("Groups %s resolved to titles=%s chat_ids=%s", wanted, titles, chat_ids)
     return titles, chat_ids

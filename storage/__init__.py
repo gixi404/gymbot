@@ -1,4 +1,4 @@
-"""Módulo de persistencia local SQLite para GymBot."""
+"""SQLite local persistence module for GymBot."""
 
 from .database import GymDatabase
 from .models import DatabaseStats, RawMessage, SyncMetadata

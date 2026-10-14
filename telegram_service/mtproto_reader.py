@@ -1,4 +1,4 @@
-"""Lector pasivo de solo lectura mediante MTProto (Telethon) para el chat de entrenamientos."""
+"""Passive read-only reader via MTProto (Telethon) for the workouts chat."""
 
 import asyncio
 import logging
@@ -21,7 +21,7 @@ from storage.database import GymDatabase
 from storage.models import RawMessage
 
 
-# Mapeo inverso chat_id/título -> grupo lógico, derivado de GROUP_CHAT_MAP en settings.
+# Reverse mapping chat_id/title -> logical group, derived from GROUP_CHAT_MAP in settings.
 def _build_chat_id_to_group(settings: Settings) -> dict[str, str]:
     mapping: dict[str, str] = {}
     for group, entries in (settings.GROUP_CHAT_MAP or {}).items():
@@ -36,12 +36,12 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramWorkoutReader:
-    """Cliente MTProto pasivo de SOLO LECTURA.
+    """Passive READ-ONLY MTProto client.
 
-    REQUISITO CRÍTICO DE SEGURIDAD:
-    Este cliente NUNCA envía mensajes, no escribe, no reacciona ni altera
-    el canal o chat de registro. Se conecta bajo demanda de forma efímera
-    para leer el historial y se desconecta de inmediato para liberar el archivo de sesión.
+    CRITICAL SECURITY REQUIREMENT:
+    This client NEVER sends messages, does not write, react or alter
+    the log channel or chat. It connects on demand in an ephemeral way
+    to read the history and disconnects immediately to release the session file.
     """
 
     def __init__(
@@ -69,9 +69,9 @@ class TelegramWorkoutReader:
 
     @asynccontextmanager
     async def get_client(self, max_retries: int = 3, retry_delay: float = 1.5) -> AsyncGenerator[TelegramClient, None]:
-        """Abre una conexión efímera con Telethon y garantiza su desconexión al finalizar.
+        """Opens an ephemeral connection with Telethon and guarantees its disconnection at the end.
 
-        Incluye reintentos breves por si otro proceso local está liberando el archivo de sesión.
+        Includes brief retries in case another local process is releasing the session file.
         """
         session_arg = (
             StringSession(self.settings.TELEGRAM_STRING_SESSION)
@@ -90,7 +90,7 @@ class TelegramWorkoutReader:
             except Exception as e:
                 last_error = e
                 logger.warning(
-                    "Intento %d de %d para conectar cliente MTProto falló: %s",
+                    "Attempt %d of %d to connect MTProto client failed: %s",
                     attempt,
                     max_retries,
                     e,
@@ -98,34 +98,34 @@ class TelegramWorkoutReader:
                 await asyncio.sleep(retry_delay)
 
         if not connected:
-            raise RuntimeError(f"No se pudo conectar el cliente MTProto tras {max_retries} intentos: {last_error}")
+            raise RuntimeError(f"Could not connect the MTProto client after {max_retries} attempts: {last_error}")
 
         try:
             if not await client.is_user_authorized():
                 raise PermissionError(
-                    f"La sesión '{self.session_name}.session' no está autorizada. "
-                    "Por favor ejecuta primero 'python auth_telethon.py' para autenticar tu cuenta."
+                    f"The session '{self.session_name}.session' is not authorized. "
+                    "Please run 'python auth_telethon.py' first to authenticate your account."
                 )
             yield client
         finally:
             try:
                 await client.disconnect()
             except Exception as e:
-                logger.debug("Error cerrando cliente MTProto: %s", e)
+                logger.debug("Error closing MTProto client: %s", e)
 
     async def sync_channel(
         self,
         force_all: bool = False,
         min_interval_seconds: float = 15.0,
     ) -> tuple[int, int]:
-        """Sincroniza incrementalmente los mensajes de todos los chats de entrenamientos hacia SQLite.
+        """Incrementally syncs the messages from all workout chats to SQLite.
 
-        Argumentos:
-            force_all: Si es True, recupera todo el historial disponible sin considerar el último ID.
-            min_interval_seconds: Tiempo mínimo en segundos entre sincronizaciones sucesivas (debounce).
+        Arguments:
+            force_all: If True, retrieves all available history without considering the last ID.
+            min_interval_seconds: Minimum time in seconds between successive syncs (debounce).
 
-        Retorna:
-            Tupla (mensajes_nuevos_sincronizados, total_mensajes_almacenados)
+        Returns:
+            Tuple (new_synced_messages, total_stored_messages)
         """
         async with self._sync_lock:
             stats = self.database.get_stats()
@@ -136,7 +136,7 @@ class TelegramWorkoutReader:
                 and (now - self._last_sync_timestamp < min_interval_seconds)
             ):
                 logger.debug(
-                    "Sincronización omitida por debounce (última hace %.1fs).",
+                    "Sync skipped due to debounce (last one %.1fs ago).",
                     now - self._last_sync_timestamp,
                 )
                 return 0, stats.total_messages
@@ -149,22 +149,22 @@ class TelegramWorkoutReader:
                         entity = await client.get_entity(current_chat_id)
                     except ValueError:
                         logger.debug(
-                            "Entidad '%s' no encontrada en caché de sesión. Obteniendo diálogos...",
+                            "Entity '%s' not found in session cache. Fetching dialogs...",
                             current_chat_id,
                         )
                         await client.get_dialogs(limit=50)
                         entity = await client.get_entity(current_chat_id)
                     except Exception as e:
-                        logger.error("No se pudo resolver la entidad del chat '%s': %s", current_chat_id, e)
+                        logger.error("Could not resolve the chat entity '%s': %s", current_chat_id, e)
                         continue
 
-                    # Nombre del grupo lógico (según GROUP_CHAT_MAP) o, si no está mapeado, el título real de Telegram.
+                    # Logical group name (per GROUP_CHAT_MAP) or, if not mapped, the real Telegram title.
                     chat_title = self._chat_id_to_group.get(str(current_chat_id)) or (
                         getattr(entity, "title", None) or getattr(entity, "username", None) or ""
                     )
                     min_id = 0 if force_all else self.database.get_last_synced_id(current_chat_id)
                     logger.info(
-                        "Iniciando sincronización de '%s' ('%s') (min_id=%d, force_all=%s)...",
+                        "Starting sync of '%s' ('%s') (min_id=%d, force_all=%s)...",
                         current_chat_id,
                         chat_title,
                         min_id,
@@ -206,12 +206,10 @@ class TelegramWorkoutReader:
                                 max_seen_id = msg.id
 
                     except FloodWaitError as e:
-                        logger.error("Rate-limit de Telegram detectado (FloodWait: %d segundos)", e.seconds)
-                        raise RuntimeError(
-                            f"Telegram ha pausado temporalmente las consultas. Espera {e.seconds} segundos."
-                        ) from e
+                        logger.error("Telegram rate-limit detected (FloodWait: %d seconds)", e.seconds)
+                        raise RuntimeError(f"Telegram has temporarily paused queries. Wait {e.seconds} seconds.") from e
                     except RPCError as e:
-                        logger.error("Error MTProto al iterar mensajes de '%s': %s", current_chat_id, e)
+                        logger.error("MTProto error while iterating messages of '%s': %s", current_chat_id, e)
                         raise
 
                     synced_count = self.database.upsert_messages(raw_messages_to_save)
@@ -221,23 +219,23 @@ class TelegramWorkoutReader:
         stats = self.database.get_stats()
         self._last_sync_timestamp = time.monotonic()
         logger.info(
-            "Sincronización completada. Nuevos mensajes: %d. Total acumulado: %d.",
+            "Sync completed. New messages: %d. Cumulative total: %d.",
             total_synced_now,
             stats.total_messages,
         )
         return total_synced_now, stats.total_messages
 
     async def verify_connection(self) -> bool:
-        """Verifica que las credenciales y la sesión de Telethon sean válidas."""
+        """Verifies that the Telethon credentials and session are valid."""
         try:
             async with self.get_client() as client:
                 me = await client.get_me()
                 logger.info(
-                    "Conexión MTProto exitosa con usuario: %s (ID: %s)",
+                    "MTProto connection successful with user: %s (ID: %s)",
                     getattr(me, "username", "N/A"),
                     me.id,
                 )
                 return True
         except Exception as e:
-            logger.error("Error verificando conexión MTProto: %s", e)
+            logger.error("Error verifying MTProto connection: %s", e)
             return False

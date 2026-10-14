@@ -1,4 +1,4 @@
-"""Pruebas unitarias para la generación de gráficos de rendimiento y peso."""
+"""Unit tests for generating performance and weight charts."""
 
 import io
 import unittest
@@ -50,10 +50,10 @@ class TestChartGenerator(unittest.TestCase):
     def test_parse_weight_entries(self):
         entries = ChartGenerator.parse_weight_entries(self.weight_messages)
         self.assertGreaterEqual(len(entries), 5)
-        # Verificar orden cronológico
+        # Verify chronological order
         dates = [e[0] for e in entries]
         self.assertEqual(dates, sorted(dates))
-        # Verificar pesos numéricos válidos
+        # Verify valid numeric weights
         for _, w in entries:
             self.assertTrue(60.0 <= w <= 80.0)
 
@@ -62,7 +62,7 @@ class TestChartGenerator(unittest.TestCase):
         self.assertIsNotNone(buf)
         self.assertIsInstance(buf, io.BytesIO)
         content = buf.getvalue()
-        # Verificar firma mágica de archivo PNG: \x89PNG\r\n\x1a\n
+        # Verify PNG file magic signature: \x89PNG\r\n\x1a\n
         self.assertTrue(content.startswith(b"\x89PNG\r\n\x1a\n"))
 
     def test_parse_exercise_data(self):
@@ -70,13 +70,13 @@ class TestChartGenerator(unittest.TestCase):
         self.assertIn("Press banca", canonical)
         self.assertEqual(len(data), 3)
 
-        # Cada punto es (fecha, carga, 1rm_estimado)
+        # Each point is (date, load, estimated_1rm)
         for _, load, e1rm in data:
             self.assertGreater(load, 45.0)
-            self.assertGreater(e1rm, load)  # El 1RM estimado debe ser mayor que la carga de repeticiones
+            self.assertGreater(e1rm, load)  # Estimated 1RM must be greater than the rep load
 
     def test_parse_exercise_data_accepts_real_formats(self):
-        """Formatos reales: series en la misma línea, sin '-', con '*' y reps sin 'kg'."""
+        """Real formats: sets on the same line, without '-', with '*' and reps without 'kg'."""
         d0 = self.base_date
         msgs = [
             RawMessage(
@@ -100,13 +100,13 @@ class TestChartGenerator(unittest.TestCase):
         ]
         _, prensa = ChartGenerator.parse_exercise_data("prensa", msgs)
         _, banca = ChartGenerator.parse_exercise_data("banca", msgs)
-        self.assertEqual(len(prensa), 3, "no parseó los 3 formatos de prensa")
-        self.assertEqual(len(banca), 3, "no parseó los 3 formatos de press banca")
+        self.assertEqual(len(prensa), 3, "did not parse the 3 prensa formats")
+        self.assertEqual(len(banca), 3, "did not parse the 3 press banca formats")
         self.assertEqual([round(p[1]) for p in prensa], [145, 125, 140])
         self.assertEqual([round(b[1]) for b in banca], [60, 62, 65])
 
     def test_parse_exercise_data_does_not_contaminate(self):
-        """'prensa' no debe mezclar 'Gemelos en prensa'; 'banca' no debe mezclar 'Press militar'."""
+        """'prensa' must not mix in 'Gemelos en prensa'; 'banca' must not mix in 'Press militar'."""
         d0 = self.base_date
         msgs = [
             RawMessage(
@@ -125,9 +125,9 @@ class TestChartGenerator(unittest.TestCase):
         _, prensa = ChartGenerator.parse_exercise_data("prensa", msgs)
         _, banca = ChartGenerator.parse_exercise_data("banca", msgs)
         _, gemelos = ChartGenerator.parse_exercise_data("gemelos", msgs)
-        self.assertEqual(len(prensa), 1, "prensa se contaminó con gemelos")
-        self.assertEqual(len(banca), 1, "banca se contaminó con press militar")
-        self.assertEqual(len(gemelos), 2, "gemelos debe seguir encontrándose al pedirlo")
+        self.assertEqual(len(prensa), 1, "prensa got contaminated with gemelos")
+        self.assertEqual(len(banca), 1, "banca got contaminated with press militar")
+        self.assertEqual(len(gemelos), 2, "gemelos must still be found when requested")
 
     def test_generate_exercise_chart_returns_valid_png(self):
         result = ChartGenerator.generate_exercise_chart("banca", self.exercise_messages)

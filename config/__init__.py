@@ -1,4 +1,4 @@
-"""Módulo de configuración del sistema GymBot."""
+"""GymBot system configuration module."""
 
 from .settings import Settings, get_settings
 

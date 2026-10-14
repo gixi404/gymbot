@@ -248,9 +248,9 @@ python service.py
 ```
 
 Abre Telegram en tu celular y busca tu bot secundario:
-1. Envía `/start` para verificar la conexión y ver el estado de la base de datos.
-2. Envía `/sync` para forzar la sincronización de tus últimos entrenamientos registrados.
-3. Envía `/stats` para consultar totales y fechas registradas.
+1. Envía `/inicio` para verificar la conexión y ver el estado de la base de datos.
+2. Envía `/sincronizar` para forzar la sincronización de tus últimos entrenamientos registrados.
+3. Envía `/estadisticas` para consultar totales y fechas registradas.
 4. Escribe cualquier pregunta en lenguaje natural o **envía un mensaje de voz/audio**:
    - Pulsa el micrófono en Telegram y haz tu pregunta hablando (ej. *"¿Cómo viene mi progresión de press de banca?"*).
     - El bot transcribirá el audio con Whisper (Groq) a texto, te mostrará la transcripción y responderá con el análisis técnico de tus datos.
@@ -284,6 +284,24 @@ Para que el bot móvil y la sincronización automática funcionen permanentement
    systemctl --user status gymbot.service
    journalctl --user -u gymbot.service -f
    ```
+
+---
+
+## 🐳 Despliegue Docker / headless (Railway, contenedores)
+
+La imagen **no incluye** el archivo `.session` ni la base `.db` (por seguridad). En un entorno sin terminal interactiva no se puede ejecutar `auth_telethon.py`, así que la sesión se inyecta como secreto:
+
+1. En tu máquina local ejecuta `python auth_telethon.py` una vez. Además del archivo `gymbot_user.session`, el asistente imprime una **sesión en texto**.
+2. Copia ese texto en la variable de entorno `TELEGRAM_STRING_SESSION` del proveedor de despliegue (Railway → Variables, o `--env-file` / `--env` en Docker). Es un secreto: trátalo como tal.
+3. El resto de variables (`TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_BOT_TOKEN`, claves de IA, etc.) se definen igualmente como variables de entorno.
+4. La base de datos se crea vacía y se rellena automáticamente en el primer arranque (sincronización inicial). Monta un volumen persistente en `DATABASE_PATH` para conservarla entre reinicios.
+
+```bash
+docker build -t gymbot .
+docker run --rm --env-file .env -e DATABASE_PATH=/app/data/gymbot.db -v gymbot_data:/app/data gymbot
+```
+
+> Si prefieres conservar el archivo `.session` en su lugar, móntalo como volumen de solo lectura y define `TELEGRAM_SESSION_NAME` con la ruta.
 
 ---
 

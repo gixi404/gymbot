@@ -1,4 +1,4 @@
-"""Modelos de datos para el almacenamiento local de GymBot."""
+"""Data models for GymBot's local storage."""
 
 import re
 from dataclasses import dataclass
@@ -9,9 +9,9 @@ ATLETA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
 
 def to_atleta_tz(dt: datetime) -> datetime:
-    """Normaliza una fecha a la zona horaria del atleta.
+    """Normalizes a date to the athlete's timezone.
 
-    Si es naive se asume UTC (así vienen de Telethon/SQLite); si es aware se convierte.
+    If naive it is assumed to be UTC (that's how they come from Telethon/SQLite); if aware it is converted.
     """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
@@ -20,7 +20,7 @@ def to_atleta_tz(dt: datetime) -> datetime:
 
 @dataclass
 class RawMessage:
-    """Representación de un mensaje obtenido del chat de entrenamientos."""
+    """Representation of a message obtained from the workout chat."""
 
     id: int
     date: datetime
@@ -32,21 +32,21 @@ class RawMessage:
     created_at: datetime | None = None
 
     def to_summary_line(self) -> str:
-        """Formatea el mensaje para la ventana de contexto de IA (compacto, sin truncar).
+        """Formats the message for the AI context window (compact, no truncation).
 
-        La fecha de envío se rotula `[enviado: ...]` en hora de Argentina para que el
-        LLM no la confunda con una fecha escrita dentro del propio texto.
+        The send date is labeled `[enviado: ...]` in Argentina time so the
+        LLM does not confuse it with a date written within the text itself.
         """
         date_str = to_atleta_tz(self.date).strftime("%d/%m/%Y")
         origin = f" [{self.chat_title}]" if self.chat_title else ""
-        # Colapsar saltos de línea múltiples por ' | ', mantener texto completo
+        # Collapse multiple line breaks into ' | ', keep the full text
         text = re.sub(r"\s*\n\s*", " | ", self.text.strip())
         return f"[enviado: {date_str}]{origin} {text}"
 
 
 @dataclass
 class SyncMetadata:
-    """Estado y cursor de sincronización para un canal o chat específico."""
+    """Sync state and cursor for a specific channel or chat."""
 
     channel_id: str
     last_message_id: int
@@ -56,7 +56,7 @@ class SyncMetadata:
 
 @dataclass
 class DatabaseStats:
-    """Métricas y estadísticas de la base de datos local."""
+    """Metrics and statistics for the local database."""
 
     total_messages: int
     first_message_date: datetime | None = None

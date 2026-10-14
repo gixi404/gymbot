@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Script de utilidad para listar los chats, grupos y canales de tu cuenta y obtener sus IDs."""
+"""Utility script to list your account's chats, groups, and channels and get their IDs."""
 
 import asyncio
 import os
@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from telethon import TelegramClient
 
-# Carga de variables de entorno
+# Loading environment variables
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 if _ENV_PATH.exists():
     load_dotenv(dotenv_path=_ENV_PATH)

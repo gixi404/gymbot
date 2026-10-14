@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Punto de entrada para el servicio de fondo (daemon) de GymBot.
+"""Entry point for the GymBot background service (daemon).
 
-Ejecuta el bot secundario de Telegram para consultas móviles y la sincronización periódica opcional.
+Runs the secondary Telegram bot for mobile queries and the optional periodic synchronization.
 """
 
 import asyncio
 import logging
-import shutil
 import signal
 import sys
 from datetime import datetime
-from pathlib import Path
 
-from ai.analyzer import GymAnalyzer
-from config.settings import Settings, get_settings
+from ai.analyzer import ATLETA_TZ, GymAnalyzer
+from config.settings import get_settings
 from storage.database import GymDatabase
 from telegram_service.bot_service import GymTelegramBot
 from telegram_service.mtproto_reader import TelegramWorkoutReader
@@ -26,148 +24,82 @@ logging.basicConfig(
 logger = logging.getLogger("gymbot.service")
 
 
-def _is_valid_telethon_session(path: Path) -> bool:
-    if not path.exists() or path.stat().st_size == 0:
-        return False
-    try:
-        import sqlite3
-
-        conn = sqlite3.connect(str(path))
-        cursor = conn.cursor()
-        cursor.execute("SELECT auth_key FROM sessions WHERE auth_key IS NOT NULL")
-        row = cursor.fetchone()
-        conn.close()
-        return bool(row and row[0])
-    except Exception:
-        return False
-
-
-def _has_stored_messages(path: Path) -> bool:
-    if not path.exists() or path.stat().st_size == 0:
-        return False
-    try:
-        import sqlite3
-
-        conn = sqlite3.connect(str(path))
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM raw_messages")
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count > 0
-    except Exception:
-        return False
-
-
-def _seed_persistent_volume_if_needed(settings: Settings) -> None:
-    """Si el volumen persistente (ej. en Railway o Docker) está vacío o corrupto, inicializa con la sesión y BD base."""
-    root_dir = Path(__file__).resolve().parent
-
-    # 1. Base de datos
-    db_target = Path(settings.DATABASE_PATH)
-    local_db = root_dir / "seed_db.db"
-    if not local_db.exists():
-        local_db = root_dir / "gymbot.db"
-
-    if local_db.exists() and local_db.resolve() != db_target.resolve():
-        if not _has_stored_messages(db_target):
-            db_target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(local_db, db_target)
-            logger.info("Base de datos inicial copiada al volumen persistente: %s", db_target)
-
-    # 2. Sesión MTProto
-    session_file_name = f"{settings.TELEGRAM_SESSION_NAME}.session"
-    session_target = Path(session_file_name)
-    if not session_target.is_absolute():
-        session_target = root_dir / session_file_name
-
-    local_session = root_dir / "seed_session.dat"
-    if not local_session.exists():
-        local_session = root_dir / "gymbot_user.session"
-
-    if local_session.exists() and local_session.resolve() != session_target.resolve():
-        if not _is_valid_telethon_session(session_target) and _is_valid_telethon_session(local_session):
-            session_target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(local_session, session_target)
-            logger.info("Sesión MTProto autenticada copiada al volumen persistente: %s", session_target)
-
-
 async def periodic_sync_task(reader: TelegramWorkoutReader, interval_minutes: int) -> None:
-    """Tarea en segundo plano para sincronizar periódicamente de forma pasiva."""
+    """Background task to synchronize periodically in a passive way."""
     if interval_minutes <= 0:
-        logger.info("Sincronización periódica automática desactivada (intervalo <= 0).")
+        logger.info("Automatic periodic synchronization disabled (interval <= 0).")
         return
 
     interval_seconds = interval_minutes * 60
     logger.info(
-        "Sincronización periódica automática activada (cada %d minutos).",
+        "Automatic periodic synchronization enabled (every %d minutes).",
         interval_minutes,
     )
 
     while True:
         try:
             await asyncio.sleep(interval_seconds)
-            logger.info("Ejecutando ciclo de sincronización automática...")
+            logger.info("Running automatic synchronization cycle...")
             new_msgs, total = await reader.sync_channel()
             logger.info(
-                "Ciclo de sincronización finalizado: %d nuevos, %d total.",
+                "Synchronization cycle finished: %d new, %d total.",
                 new_msgs,
                 total,
             )
         except asyncio.CancelledError:
-            logger.info("Tarea de sincronización periódica cancelada.")
+            logger.info("Periodic synchronization task cancelled.")
             break
         except Exception as e:
-            logger.warning("Advertencia en ciclo de sincronización automática: %s", e)
+            logger.warning("Warning in automatic synchronization cycle: %s", e)
 
 
 async def weekly_summary_task(bot_service: GymTelegramBot, check_interval_seconds: int = 1800) -> None:
-    """Monitorea periódicamente y envía el resumen semanal proactivo los domingos a partir de las 20:00 hs."""
-    logger.info("Monitor de resumen semanal proactivo activado (domingos 20:00).")
+    """Monitors periodically and sends the proactive weekly summary on Sundays from 20:00 onward."""
+    logger.info("Proactive weekly summary monitor enabled (Sundays 20:00).")
     last_sent_week: int | None = None
 
     while True:
         try:
             await asyncio.sleep(check_interval_seconds)
-            now = datetime.now()
+            now = datetime.now(ATLETA_TZ)
             iso_year, iso_week, iso_weekday = now.isocalendar()
-            # iso_weekday 7 = domingo
+            # iso_weekday 7 = Sunday
             if iso_weekday == 7 and now.hour >= 20 and last_sent_week != iso_week:
-                logger.info("Generando resumen semanal proactivo de domingo...")
+                logger.info("Generating proactive Sunday weekly summary...")
                 summary = bot_service.analyzer.generate_weekly_summary()
                 await bot_service.send_proactive_message(f"📢 *Resumen Semanal Proactivo*\n\n{summary}")
                 last_sent_week = iso_week
         except asyncio.CancelledError:
-            logger.info("Monitor de resumen semanal proactivo cancelado.")
+            logger.info("Proactive weekly summary monitor cancelled.")
             break
         except Exception as e:
-            logger.warning("Error en monitor de resumen semanal proactivo: %s", e)
+            logger.warning("Error in proactive weekly summary monitor: %s", e)
 
 
 async def run_services() -> None:
-    """Inicia concurrentemente el bot móvil y las tareas periódicas."""
+    """Starts the mobile bot and the periodic tasks concurrently."""
     settings = get_settings()
-    _seed_persistent_volume_if_needed(settings)
 
     database = GymDatabase(settings.DATABASE_PATH)
     reader = TelegramWorkoutReader(settings, database)
     analyzer = GymAnalyzer(settings, database)
 
-    # 1. Sincronización suave inicial al arrancar el servicio
+    # 1. Soft initial synchronization on service startup
     try:
-        logger.info("Realizando sincronización inicial de arranque...")
+        logger.info("Performing initial synchronization on startup...")
         new_msgs, total_msgs = await reader.sync_channel()
         logger.info(
-            "Sincronización inicial exitosa: %d nuevos mensajes, %d total.",
+            "Initial synchronization successful: %d new messages, %d total.",
             new_msgs,
             total_msgs,
         )
     except Exception as e:
         logger.warning(
-            "No se pudo completar la sincronización inicial al arrancar (se reintentará después): %s",
+            "The initial synchronization on startup could not be completed (it will be retried later): %s",
             e,
         )
 
-    # 2. Construcción de la aplicación del Bot Móvil
+    # 2. Building the Mobile Bot application
     bot_service = GymTelegramBot(
         settings=settings,
         database=database,
@@ -176,20 +108,20 @@ async def run_services() -> None:
     )
     application = bot_service.build_application()
 
-    # 3. Inicialización del bot dentro del loop asyncio
+    # 3. Bot initialization inside the asyncio loop
     await application.initialize()
     await application.start()
     await application.updater.start_polling(drop_pending_updates=True)
-    logger.info("Bot secundario de Telegram iniciado y escuchando mensajes en polling...")
+    logger.info("Secondary Telegram bot started and listening for messages via polling...")
 
-    # 4. Lanzamiento de sincronización periódica y resumen proactivo en background
+    # 4. Launching periodic synchronization and proactive summary in the background
     sync_task: asyncio.Task | None = None
     if settings.AUTO_SYNC_INTERVAL_MINUTES > 0:
         sync_task = asyncio.create_task(periodic_sync_task(reader, settings.AUTO_SYNC_INTERVAL_MINUTES))
 
     weekly_task = asyncio.create_task(weekly_summary_task(bot_service))
 
-    # 5. Espera hasta señal de terminación (SIGINT/SIGTERM)
+    # 5. Wait until a termination signal (SIGINT/SIGTERM)
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -202,7 +134,7 @@ async def run_services() -> None:
     try:
         await stop_event.wait()
     finally:
-        logger.info("Deteniendo servicios de GymBot...")
+        logger.info("Stopping GymBot services...")
         if sync_task:
             sync_task.cancel()
             try:
@@ -221,16 +153,16 @@ async def run_services() -> None:
             await application.updater.stop()
         await application.stop()
         await application.shutdown()
-        logger.info("Servicios detenidos de forma limpia.")
+        logger.info("Services stopped cleanly.")
 
 
 def main() -> None:
     try:
         asyncio.run(run_services())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Servicio detenido por el usuario.")
+        logger.info("Service stopped by the user.")
     except Exception as e:
-        logger.critical("Error fatal en el servicio de GymBot: %s", e, exc_info=True)
+        logger.critical("Fatal error in the GymBot service: %s", e, exc_info=True)
         sys.exit(1)
 
 

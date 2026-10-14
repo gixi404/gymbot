@@ -1,4 +1,4 @@
-"""Pruebas unitarias para exportación CSV, teclados y asistentes de análisis."""
+"""Unit tests for CSV export, keyboards and analysis helpers."""
 
 import csv
 import io
@@ -35,12 +35,12 @@ class TestFeatures(unittest.TestCase):
         buf = self.db.export_to_csv()
         self.assertIsInstance(buf, io.BytesIO)
 
-        # Verificar decodificación UTF-8-sig
+        # Verify UTF-8-sig decoding
         content = buf.getvalue().decode("utf-8-sig")
         reader = csv.reader(io.StringIO(content))
         rows = list(reader)
 
-        # 1 fila encabezado + 3 filas de datos
+        # 1 header row + 3 data rows
         self.assertEqual(len(rows), 4)
         self.assertEqual(rows[0], ["ID", "Fecha_UTC", "Origen", "Texto", "Tipo_Media", "Fecha_Edicion"])
         self.assertEqual(rows[1][0], "1")
@@ -78,18 +78,18 @@ class TestFeatures(unittest.TestCase):
 
         analyzer = GymAnalyzer(database=self.db, gemini_client=mock_gemini)
 
-        # Probar análisis de nutrición de hoy
+        # Test today's nutrition analysis
         res_nutri = analyzer.analyze_nutrition_today()
         self.assertEqual(res_nutri, "Respuesta simulada exitosa")
         mock_gemini.generate_response.assert_called()
 
-        # Probar recomendación de progresión
+        # Test progression recommendation
         mock_gemini.reset_mock()
         res_prog = analyzer.recommend_next_progression("militar")
         self.assertEqual(res_prog, "Respuesta simulada exitosa")
         mock_gemini.generate_response.assert_called()
 
-        # Probar resumen semanal
+        # Test weekly summary
         mock_gemini.reset_mock()
         res_week = analyzer.generate_weekly_summary()
         self.assertEqual(res_week, "Respuesta simulada exitosa")

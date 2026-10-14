@@ -1,4 +1,4 @@
-"""Pruebas unitarias para el motor de análisis de IA y construcción de contexto."""
+"""Unit tests for the AI analysis engine and context building."""
 
 import tempfile
 import unittest
@@ -63,13 +63,13 @@ class TestGymAnalyzer(unittest.TestCase):
         self.assertIn("[enviado: 03/04/2026]", context)
 
     def test_analyze_query_empty_database_warning(self):
-        # Con BD vacía, no debe invocar la API de Gemini
+        # With an empty DB, it must not call the Gemini API
         response = self.analyzer.analyze_query("¿Cuál fue mi mejor press de banca?")
         self.assertIn("La base de datos local está vacía", response)
         self.mock_gemini.generate_response.assert_not_called()
 
     def test_analyze_query_calls_gemini_with_context(self):
-        # Insertamos un mensaje
+        # Insert a message
         self.db.upsert_messages([RawMessage(id=1, date=datetime.now(), text="Press Militar: 50kg 4x6")])
         self.mock_gemini.generate_response.return_value = "Tu mejor press militar fue de 50kg para 6 repeticiones."
 
@@ -83,7 +83,7 @@ class TestGymAnalyzer(unittest.TestCase):
         self.assertIn("¿Cuál fue mi mejor press militar?", prompt_passed)
 
     def test_get_system_instruction_includes_custom_directives(self):
-        # Probamos que el método devuelva la instrucción base por defecto
+        # Verify the method returns the default base instruction
         instruction = self.analyzer.get_system_instruction()
         self.assertIn("Eres el Entrenador de Fuerza", instruction)
 
@@ -94,7 +94,7 @@ class TestGymAnalyzer(unittest.TestCase):
         self.mock_gemini.transcribe_audio.assert_called_once_with(b"fake_audio_bytes", mime_type="audio/ogg")
 
     def test_analyze_query_with_attachments_calls_gemini(self):
-        # Con BD vacía pero con adjuntos, sí debe procesar la consulta
+        # With an empty DB but with attachments, it must process the query
         self.mock_gemini.generate_response.return_value = "La imagen muestra una serie de 100kg en press banca."
         attachments = [(b"image_bytes_here", "image/png")]
 
@@ -147,8 +147,8 @@ class TestGymAnalyzer(unittest.TestCase):
         self.assertEqual(series[-1], (date(2026, 10, 7), 70.05))
 
     def test_nutrition_date_priority_uses_text_date_over_send_date(self):
-        # id1: enviada el 14/10 pero la comida es del 13/10 (fecha en el texto).
-        # id2: enviada el 13/10 pero la comida es del 11/10 (fecha en el texto).
+        # id1: sent on 14/10 but the meal is from 13/10 (date in the text).
+        # id2: sent on 13/10 but the meal is from 11/10 (date in the text).
         self.db.upsert_messages(
             [
                 RawMessage(
@@ -177,7 +177,7 @@ class TestGymAnalyzer(unittest.TestCase):
         self.assertNotIn("Cena: arroz", prompt)
 
     def test_attachment_default_uses_short_context(self):
-        # 50 sesiones históricas que NO deben adjuntarse a una foto sin caption.
+        # 50 historical sessions that must NOT be attached to a photo without caption.
         self.db.upsert_messages(
             [
                 RawMessage(
@@ -202,7 +202,7 @@ class TestGymAnalyzer(unittest.TestCase):
         self.assertEqual(route.groups, ["Comidas", "PesoCorporal"])
         self.assertEqual(route.days_lookback, 3)
         prompt = self.mock_gemini.generate_response.call_args[1]["prompt"]
-        self.assertNotIn("VOLUMEN_SECRETO", prompt, "una foto sin caption no debe arrastrar el historial de Sesiones")
+        self.assertNotIn("VOLUMEN_SECRETO", prompt, "a photo without caption must not drag in the Sesiones history")
 
     def test_weekly_summary_uses_focused_context_and_complex_route(self):
         self.db.upsert_messages(

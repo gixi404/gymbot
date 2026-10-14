@@ -9,3 +9,17 @@ htmlcov/
 .git/
 .gitignore
 *.log
+.ruff_cache/
+
+# Never bake credentials or personal state into the image:
+# - .env holds provider credentials (inject as env vars / --env-file at runtime).
+# - *.session holds the Telegram account auth key (inject TELEGRAM_STRING_SESSION
+#   as a deploy secret; see auth_telethon.py to obtain it).
+# - *.db holds personal workout history (re-synced automatically on startup).
+.env
+.env.*
+*.session
+*.session-journal
+*.db
+*.db-wal
+*.db-shm

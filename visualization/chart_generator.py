@@ -1,4 +1,4 @@
-"""Generador de gráficos estadísticos de rendimiento y peso para GymBot."""
+"""Statistical performance and weight chart generator for GymBot."""
 
 import io
 import logging
@@ -8,7 +8,7 @@ from datetime import datetime
 
 import matplotlib
 
-matplotlib.use("Agg")  # Modo headless sin interfaz gráfica
+matplotlib.use("Agg")  # Headless mode without graphical interface
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 
@@ -16,7 +16,7 @@ from storage.models import RawMessage
 
 logger = logging.getLogger(__name__)
 
-# Paleta oscura moderna
+# Modern dark palette
 BG_COLOR = "#0f172a"  # Slate 900
 PANEL_COLOR = "#1e293b"  # Slate 800
 GRID_COLOR = "#334155"  # Slate 700
@@ -29,11 +29,11 @@ PURPLE_ACCENT = "#a855f7"  # Purple 500
 
 
 class ChartGenerator:
-    """Genera gráficos de evolución física y fuerza listos para enviar por Telegram."""
+    """Generates physical evolution and strength charts ready to send via Telegram."""
 
     @staticmethod
     def _apply_dark_style(fig, ax, title: str, xlabel: str = "Fecha", ylabel: str = "Kg"):
-        """Aplica un tema oscuro refinado y legible a la figura de Matplotlib."""
+        """Applies a refined, readable dark theme to the Matplotlib figure."""
         fig.patch.set_facecolor(BG_COLOR)
         ax.set_facecolor(PANEL_COLOR)
 
@@ -50,22 +50,22 @@ class ChartGenerator:
 
     @classmethod
     def parse_weight_entries(cls, messages: list[RawMessage]) -> list[tuple[datetime, float]]:
-        """Extrae todas las mediciones de peso con su fecha respectiva."""
+        """Extracts all weight measurements with their respective date."""
         entries: list[tuple[datetime, float]] = []
 
-        # Patrón para líneas tipo: "07/10/26 - 70.05 kg" o "15/04/26 - 67.70 kg"
+        # Pattern for lines like: "07/10/26 - 70.05 kg" or "15/04/26 - 67.70 kg"
         multi_line_pattern = re.compile(
             r"(\d{1,2}/\d{1,2}/\d{2,4})\s*[-:]?\s*(\d{2,3}(?:[.,]\d{1,2})?)\s*kg",
             re.IGNORECASE,
         )
 
         for msg in messages:
-            # 1. Si el mensaje contiene registros con formato 'DD/MM/AA - XX.XX kg'
+            # 1. If the message contains records with the format 'DD/MM/YY - XX.XX kg'
             found_multiline = False
             for match in multi_line_pattern.finditer(msg.text):
                 date_str, weight_str = match.groups()
                 try:
-                    # Normalizar año de 2 dígitos a 4 dígitos
+                    # Normalize 2-digit year to 4 digits
                     parts = date_str.split("/")
                     day, month = int(parts[0]), int(parts[1])
                     year = int(parts[2])
@@ -79,7 +79,7 @@ class ChartGenerator:
                 except Exception:
                     continue
 
-            # 2. Si no es un mensaje multilínea pero proviene del grupo PesoCorporal
+            # 2. If it is not a multiline message but comes from the PesoCorporal group
             if not found_multiline and (msg.chat_title and "peso" in msg.chat_title.lower()):
                 single_match = re.search(r"\b(\d{2,3}(?:[.,]\d{1,2})?)\s*(?:kg)?\b", msg.text)
                 if single_match:
@@ -90,7 +90,7 @@ class ChartGenerator:
                     except Exception:
                         pass
 
-        # Ordenar cronológicamente y deduplicar por fecha (manteniendo el último del día)
+        # Sort chronologically and deduplicate by date (keeping the last one of the day)
         entries.sort(key=lambda x: x[0])
         deduped: dict[str, tuple[datetime, float]] = {}
         for dt, w in entries:
@@ -101,7 +101,7 @@ class ChartGenerator:
 
     @classmethod
     def generate_weight_chart(cls, messages: list[RawMessage]) -> io.BytesIO | None:
-        """Genera un gráfico de evolución de peso corporal con media móvil y estadísticas."""
+        """Generates a body weight evolution chart with moving average and statistics."""
         points = cls.parse_weight_entries(messages)
         if len(points) < 2:
             return None
@@ -119,7 +119,7 @@ class ChartGenerator:
                 ylabel="Peso (kg)",
             )
 
-            # Curva de mediciones
+            # Measurement curve
             ax.plot(
                 dates,
                 weights,
@@ -131,7 +131,7 @@ class ChartGenerator:
                 alpha=0.9,
             )
 
-            # Media móvil si hay suficientes datos (>= 5 puntos)
+            # Moving average if there is enough data (>= 5 points)
             if len(weights) >= 5:
                 window = min(4, len(weights) // 2)
                 rolling_avg = []
@@ -150,12 +150,12 @@ class ChartGenerator:
                     alpha=0.95,
                 )
 
-            # Formato de fechas en eje X
+            # Date format on the X axis
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %y"))
             ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
             fig.autofmt_xdate(rotation=25)
 
-            # Estadísticas resumen en caja superior
+            # Summary statistics in top box
             first_w, last_w = weights[0], weights[-1]
             min_w, max_w = min(weights), max(weights)
             diff = last_w - first_w
@@ -193,21 +193,21 @@ class ChartGenerator:
         finally:
             plt.close(fig)
 
-    # Ejercicios accesorios: si el header arranca con uno de estos y la búsqueda
-    # no lo menciona, es un falso positivo (p. ej. "Gemelos en prensa" al buscar
-    # "prensa"). Lista curada contra los formatos reales de la BD.
+    # Accessory exercises: if the header starts with one of these and the search
+    # does not mention it, it is a false positive (e.g. "Gemelos en prensa" when
+    # searching "prensa"). List curated against the real formats in the DB.
     _ACCESSORY_HEADS = ("gemelos", "gemelo", "antebrazo", "antebrazob")
 
     @staticmethod
     def _normalize(text: str) -> str:
-        """Minúsculas sin tildes para matching robusto ('Jalón' == 'jalon')."""
+        """Lowercase without accents for robust matching ('Jalón' == 'jalon')."""
         decomposed = unicodedata.normalize("NFD", text.lower())
         return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
 
     @staticmethod
     def _parse_set_block(text: str) -> tuple[float, list[int]] | None:
-        """Extrae (peso_kg, [reps]) de una línea tipo '145 kg 11.10.9', '60kg 10 8 8 8',
-        '32.5 12 10 8 8' o '80kg 3x8'. Devuelve None si no hay bloque válido."""
+        """Extracts (weight_kg, [reps]) from a line like '145 kg 11.10.9', '60kg 10 8 8 8',
+        '32.5 12 10 8 8' or '80kg 3x8'. Returns None if there is no valid block."""
         match = re.search(r"(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:kgs?|kh)?\s*(.*)$", text.strip(), re.IGNORECASE)
         if not match:
             return None
@@ -233,11 +233,11 @@ class ChartGenerator:
     def parse_exercise_data(
         cls, exercise_query: str, messages: list[RawMessage]
     ) -> tuple[str, list[tuple[datetime, float, float]]]:
-        """Busca un ejercicio y extrae (fecha, carga_maxima, 1rm_estimado_maximo) por sesión.
+        """Searches for an exercise and extracts (date, max_load, max_estimated_1rm) per session.
 
-        Soporta los formatos reales de la BD: líneas que empiezan con '-', '*' o
-        directamente el nombre seguido de ':' o '('; series en la misma línea o en
-        las líneas siguientes.
+        Supports the real formats in the DB: lines that start with '-', '*' or
+        directly the name followed by ':' or '('; sets on the same line or on
+        the following lines.
         """
         query_norm = cls._normalize(exercise_query.strip())
         query_tokens = [t for t in re.split(r"\W+", query_norm) if t]
@@ -245,7 +245,7 @@ class ChartGenerator:
         sessions: dict[str, tuple[datetime, float, float]] = {}
 
         for msg in messages:
-            # Solo chats de entrenamientos
+            # Only workout chats
             if msg.chat_title and msg.chat_title.lower() in ("comidas", "pesocorporal"):
                 continue
 
@@ -266,12 +266,12 @@ class ChartGenerator:
                 if not all(token in name_norm for token in query_tokens):
                     continue
 
-                # Excluir accesorios (p. ej. "Gemelos en prensa" al buscar "prensa")
+                # Exclude accessories (e.g. "Gemelos en prensa" when searching "prensa")
                 first_word = re.split(r"\W+", name_norm)[0]
                 if first_word in cls._ACCESSORY_HEADS and first_word not in query_tokens:
                     continue
 
-                # Bloque de series: primero la misma línea, luego las 3 siguientes
+                # Set block: first the same line, then the next 3 lines
                 rest = stripped[header_match.end(1) :]
                 block = cls._parse_set_block(rest)
                 if block is None:
@@ -300,7 +300,7 @@ class ChartGenerator:
 
     @classmethod
     def generate_exercise_chart(cls, exercise_query: str, messages: list[RawMessage]) -> tuple[io.BytesIO, str] | None:
-        """Genera un gráfico de evolución de fuerza (1RM y carga efectiva) para un ejercicio."""
+        """Generates a strength evolution chart (1RM and effective load) for an exercise."""
         canonical_name, data = cls.parse_exercise_data(exercise_query, messages)
         if len(data) < 2:
             return None
@@ -319,7 +319,7 @@ class ChartGenerator:
                 ylabel="Kg",
             )
 
-            # Línea de 1RM Estimado
+            # Estimated 1RM line
             ax.plot(
                 dates,
                 e1rms,
@@ -331,7 +331,7 @@ class ChartGenerator:
                 alpha=0.95,
             )
 
-            # Línea de Carga Efectiva
+            # Effective Load line
             ax.plot(
                 dates,
                 loads,
@@ -344,12 +344,12 @@ class ChartGenerator:
                 alpha=0.85,
             )
 
-            # Formato de fechas
+            # Date format
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %y"))
             ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
             fig.autofmt_xdate(rotation=25)
 
-            # Estadísticas
+            # Statistics
             initial_1rm = e1rms[0]
             current_1rm = e1rms[-1]
             diff = current_1rm - initial_1rm
