@@ -75,6 +75,60 @@ class TestChartGenerator(unittest.TestCase):
             self.assertGreater(load, 45.0)
             self.assertGreater(e1rm, load)  # El 1RM estimado debe ser mayor que la carga de repeticiones
 
+    def test_parse_exercise_data_accepts_real_formats(self):
+        """Formatos reales: series en la misma línea, sin '-', con '*' y reps sin 'kg'."""
+        d0 = self.base_date
+        msgs = [
+            RawMessage(
+                id=30,
+                date=d0,
+                chat_title="Sesiones",
+                text="LUNES\n- Prensa:\n145 kg 11.10.9\n- Press banca: 60kg 10 8 8 8",
+            ),
+            RawMessage(
+                id=31,
+                date=d0 + timedelta(days=7),
+                chat_title="Sesiones",
+                text="VIERNES\nPrensa: 125 11 11 9 9\nPress banca: 62.5 12 10 8 8",
+            ),
+            RawMessage(
+                id=32,
+                date=d0 + timedelta(days=14),
+                chat_title="Sesiones",
+                text="LUNES\n* Prensa de piernas (140 kg 11.10.10)\n- Press banca: 65kg 3x8",
+            ),
+        ]
+        _, prensa = ChartGenerator.parse_exercise_data("prensa", msgs)
+        _, banca = ChartGenerator.parse_exercise_data("banca", msgs)
+        self.assertEqual(len(prensa), 3, "no parseó los 3 formatos de prensa")
+        self.assertEqual(len(banca), 3, "no parseó los 3 formatos de press banca")
+        self.assertEqual([round(p[1]) for p in prensa], [145, 125, 140])
+        self.assertEqual([round(b[1]) for b in banca], [60, 62, 65])
+
+    def test_parse_exercise_data_does_not_contaminate(self):
+        """'prensa' no debe mezclar 'Gemelos en prensa'; 'banca' no debe mezclar 'Press militar'."""
+        d0 = self.base_date
+        msgs = [
+            RawMessage(
+                id=40,
+                date=d0,
+                chat_title="Sesiones",
+                text="LUNES\n- Prensa: 120kg 10 8 8\n- Gemelos en prensa: 100kg 12 12 12\n- Press banca: 60kg 8 8 8\n- Press militar: 30kg 8 8 8",
+            ),
+            RawMessage(
+                id=41,
+                date=d0 + timedelta(days=7),
+                chat_title="Sesiones",
+                text="LUNES\n- Gemelos prensa: 100kg 12 12 12\n- Press militar: 32.5kg 8 8 8",
+            ),
+        ]
+        _, prensa = ChartGenerator.parse_exercise_data("prensa", msgs)
+        _, banca = ChartGenerator.parse_exercise_data("banca", msgs)
+        _, gemelos = ChartGenerator.parse_exercise_data("gemelos", msgs)
+        self.assertEqual(len(prensa), 1, "prensa se contaminó con gemelos")
+        self.assertEqual(len(banca), 1, "banca se contaminó con press militar")
+        self.assertEqual(len(gemelos), 2, "gemelos debe seguir encontrándose al pedirlo")
+
     def test_generate_exercise_chart_returns_valid_png(self):
         result = ChartGenerator.generate_exercise_chart("banca", self.exercise_messages)
         self.assertIsNotNone(result)

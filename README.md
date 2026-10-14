@@ -1,6 +1,6 @@
 # 🏋️ GymBot - Analizador Inteligente de Entrenamientos de Gimnasio
 
-Un sistema completo, modular, robusto y **100% gratuito ($0)** diseñado para registrar, sincronizar y analizar entrenamientos de gimnasio a partir de un chat privado de Telegram, utilizando **MTProto en solo lectura pasiva**, persistencia local en **SQLite (WAL)** y el motor de IA **Google Gemini 2.5 Flash** (`google-genai`).
+Un sistema completo, modular, robusto y **100% gratuito ($0)** diseñado para registrar, sincronizar y analizar entrenamientos de gimnasio a partir de un chat privado de Telegram, utilizando **MTProto en solo lectura pasiva**, persistencia local en **SQLite (WAL)** y una **arquitectura de IA híbrida de 3 niveles** (clasificador en Groq → contexto mínimo en SQLite → ejecución en Qwen/DeepSeek) que evita la congestión de Gemini y reduce el consumo de tokens.
 
 ---
 
@@ -12,10 +12,14 @@ Un sistema completo, modular, robusto y **100% gratuito ($0)** diseñado para re
 2. **Doble Interfaz de Consulta**:
    - **Interfaz PC (Terminal CLI)**: Terminal interactiva con formato visual (`rich`), comandos especiales (`:sync`, `:stats`, `:clear`, `:help`, `:exit`) y soporte de argumentos directos (`python cli.py "¿Cuál fue mi mejor banca del mes?"`).
    - **Interfaz Móvil (Bot Secundario)**: Bot independiente creado con BotFather para responder tus consultas directamente al celular con **autenticación estricta por whitelist** (`telegram_user_id`).
-3. **Motor de IA Gratuito (Gemini 2.5 Flash)**:
-   - Integrado con el SDK oficial `google-genai`.
-   - Ventana de contexto de 1 millón de tokens bajo el Free Tier (15 RPM, 1.500 peticiones diarias gratuitas).
-   - Prompt de sistema especializado en fisiología del ejercicio, sobrecarga progresiva, estimación teórica de 1RM (Epley/Brzycki) y análisis de fatiga.
+3. **Arquitectura de IA Híbrida de 3 Niveles**:
+   - **Nivel 1 — Clasificador (`ai/router.py`)**: antes de tocar la base de datos, `qwen/qwen3.8-27b` (Groq) responde en JSON estricto con `complexity`, `groups` y `days_lookback`. Si el clasificador falla o da timeout, se aplica un fallback seguro: análisis completo (todos los grupos, todo el historial).
+   - **Nivel 2 — Contexto mínimo (`ai/analyzer.py`)**: SQLite solo devuelve los grupos y el rango de días indicados, en lugar de volcar el historial completo. Con una consulta de macros de un mes puntual, el contexto baja de ~11.600 a ~1.200 caracteres.
+   - **Nivel 3 — Enrutamiento de ejecución (`ai/llm_client.py`)**: la cadena es estricta según la complejidad y sin modelos intermedios en Groq:
+     - **Simple y liviana** (< 4.200 tokens estimados): `qwen/qwen3.8-27b` (Groq) -> `deepseek-flash` (DeepSeek) -> Gemini.
+     - **Compleja, larga o multi-grupo**: `deepseek-flash` (DeepSeek) -> Gemini (nunca se reintenta en Groq).
+     - Si un motor falla a mitad del stream, los tokens ya emitidos se conservan y la respuesta se cierra con Gemini en la siguiente petición. Los bloques de razonamiento interno se suprimen en vivo.
+   - **Gemini** queda reservado para visión (fotos y documentos) y como respaldo final.
 4. **Persistencia y Sincronización Eficiente**:
    - Base de datos SQLite local configurada en modo **WAL (Write-Ahead Logging)** para lectura concurrente libre de bloqueos.
    - Sincronización incremental mediante cursor `min_id` para consultar únicamente mensajes nuevos.
@@ -29,22 +33,29 @@ Un sistema completo, modular, robusto y **100% gratuito ($0)** diseñado para re
 ## 🏗️ Arquitectura del Sistema
 
 ```
-[Chat Privado de Registros] (Telegram)
-           │
-           │ (Telethon MTProto - Solo Lectura Pasiva)
-           ▼
- [telegram_service/mtproto_reader.py] (Conexión Efímera Incremental min_id)
-           │
-           ▼
-   [storage/database.py] (SQLite en modo WAL: gymbot.db)
-           │
-           ├──► [ai/gemini_client.py + ai/analyzer.py] (Gemini 2.5 Flash)
-           │                     │
-           │                     ├──► [cli.py] (Terminal PC Interactiva / Argumentos)
-           │                     │
-           │                     └──► [telegram_service/bot_service.py] (Bot Móvil con Whitelist)
-           │
-      [service.py] (Daemon background para systemd: Bot Móvil + Sync Periódico)
+[Chat Privado / Foro de Registros] (Telegram)
+            |
+            | (Telethon MTProto - Solo Lectura Pasiva)
+            v
+  [telegram_service/mtproto_reader.py] (Conexion Efimera Incremental min_id)
+            |
+            v
+    [storage/database.py] (SQLite en modo WAL: gymbot.db)
+            |
+            +--> NIVEL 1 - [ai/router.py]  Clasificador qwen/qwen3.8-27b (Groq)
+            |       -> {complexity, groups, days_lookback}; si falla = analisis completo
+            |
+            +--> NIVEL 2 - [ai/analyzer.py]  Contexto minimo: solo esos grupos y dias
+            |
+            +--> NIVEL 3 - [ai/llm_client.py]  Enrutador de ejecucion
+            |       -> simple y chico  : qwen/qwen3.8-27b (Groq) -> deepseek-flash -> Gemini
+            |       -> complejo/largo : deepseek-flash (DeepSeek) -> Gemini
+            |       -> foto/documento : Gemini (vision + respaldo)
+            |
+            +--> [cli.py] (Terminal PC Interactiva / Argumentos)
+            +--> [telegram_service/bot_service.py] (Bot Movil con Whitelist)
+
+       [service.py] (Daemon background para systemd: Bot Movil + Sync Periodico)
 ```
 
 ---
@@ -66,10 +77,13 @@ gymbot/
 │   └── bot_service.py       # Bot de Telegram para consultas móviles con whitelist
 ├── ai/
 │   ├── __init__.py
-│   ├── gemini_client.py     # Cliente oficial google-genai con reintentos para Free Tier
-│   └── analyzer.py          # Constructor de contexto y directivas de entrenador de fuerza
+│   ├── gemini_client.py     # Cliente google-genai (vision y respaldo final)
+│   ├── router.py            # Nivel 1: clasificador, grupos logicos y fallback seguro
+│   ├── llm_client.py        # Nivel 3: Groq / DeepSeek, filtro de razonamiento y fallback
+│   └── analyzer.py          # Nivel 2: construccion de contexto filtrado + prompt de coach
 ├── cli.py                   # CLI para terminal de PC (modo interactivo y argumentos)
 ├── service.py               # Servicio en segundo plano para el bot móvil
+├── backfill_chat_titles.py  # Migracion idempotente de chat_title (usa GROUP_CHAT_MAP)
 ├── auth_telethon.py         # Asistente interactivo guiado para el login inicial de Telethon
 ├── gymbot.service           # Archivo de unidad systemd para Linux
 ├── requirements.txt         # Dependencias del proyecto
@@ -84,7 +98,9 @@ gymbot/
 ### 1. Requisitos Previos
 - Python 3.10 o superior (compatible y probado en Python 3.14).
 - Cuenta de Telegram personal.
-- Clave de API de Google Gemini (gratuita).
+- Clave de API de Google Gemini (gratuita, para visión).
+- Clave de API de Groq (gratuita, proveedor principal de texto).
+- Clave de API de DeepSeek (opcional, para análisis complejos y como respaldo de Groq).
 
 ### 2. Clonar y Crear el Entorno Virtual
 
@@ -115,7 +131,13 @@ pip install -r requirements.txt
    - BotFather te entregará un `token` HTTP API.
 4. **API Key de Google Gemini (Free Tier)**:
    - Entra en [Google AI Studio](https://aistudio.google.com/app/apikey).
-   - Genera tu clave de API gratuita.
+   - Genera tu clave de API gratuita. Se usa hoy solo para fotos/documentos y respaldo.
+5. **API Key de Groq (Free Tier)**:
+   - Entra en [console.groq.com/keys](https://console.groq.com/keys) (no requiere tarjeta).
+   - Genera tu clave. Aloja el clasificador y el modelo ligero (`qwen/qwen3.8-27b`).
+6. **API Key de DeepSeek (opcional)**:
+   - Entra en [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys).
+   - Si la dejas vacía, las consultas complejas caen al modelo ligero de Groq y luego a Gemini.
 
 ### 4. Configurar el Archivo `.env`
 
@@ -131,17 +153,41 @@ Ejemplo de contenido:
 TELEGRAM_API_ID=12345678
 TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789
 TELEGRAM_SESSION_NAME=gymbot_user
-TELEGRAM_WORKOUT_CHAT_ID=-1001234567890
+# Varios IDs separados por comas: uno por grupo/tema de tu diario
+TELEGRAM_WORKOUT_CHAT_ID=-1001234567890,-1002222222222
 
 TELEGRAM_BOT_TOKEN=1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ_12345678
 ALLOWED_TELEGRAM_USER_IDS=123456789
 
+# Nivel 1 y modelo ligero (Groq)
+GROQ_API_KEY=gsk_TuClaveGroqAqui
+GROQ_CLASSIFIER_MODEL=qwen/qwen3.8-27b
+GROQ_LIGHT_MODEL=qwen/qwen3.8-27b
+
+# Modelos secundarios de Groq: VACIO por defecto, si el ligero falla se salta directo
+# a DeepSeek. Añade IDs separados por comas solo si quieres otros reintentos en Groq.
+GROQ_FALLBACK_MODELS=[]
+
+# Nivel 3 para consultas complejas (DeepSeek)
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-flash
+
+# Vision y respaldo (Gemini)
 GEMINI_API_KEY=AIzaSyD-TuClaveGeminiAqui1234567890
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-flash-lite-latest
+
+# Enrutador: umbral de tokens estimados y ventana multi-grupo
+ROUTER_TOKEN_THRESHOLD=4200
+ROUTER_MULTI_GROUP_DAYS=14
+
+# Grupos logicos -> chats reales (IDs o titulos alternativos como "GYM")
+GROUP_CHAT_MAP={"Sesiones":["-1001234567890","-1002222222222"],"Cardio":["-1003333333333"],"Comidas":["-1004444444444"],"PesoCorporal":["-1005555555555"]}
 
 DATABASE_PATH=gymbot.db
 AUTO_SYNC_INTERVAL_MINUTES=60
 ```
+
+> **Nota sobre `GROUP_CHAT_MAP`**: traduce cada grupo lógico (`Sesiones`, `Cardio`, `Comidas`, `PesoCorporal`) a los IDs de chat o títulos reales. Es imprescindible cuando un chat físico no se llama como el grupo lógico (por ejemplo el chat `GYM` envía a `Sesiones`). Si alguna fila antigua quedó sin `chat_title`, el script `python backfill_chat_titles.py` la normaliza con este mismo mapa (idempotente, admite `--dry-run`).
 
 ---
 
@@ -175,7 +221,7 @@ gymbot > :sync
 ✔ Sincronización exitosa: 12 nuevos mensajes guardados. Total en base de datos: 142.
 
 gymbot > ¿Cuál fue mi mejor press de banca este mes?
-[Analizando con Gemini 2.5 Flash...]
+[Clasificando consulta -> Consultado 1 grupo / 30 dias -> Respondiendo con qwen/qwen3.8-27b]
 
 gymbot > :stats
 [Muestra tabla con fechas y conteos]
@@ -207,7 +253,7 @@ Abre Telegram en tu celular y busca tu bot secundario:
 3. Envía `/stats` para consultar totales y fechas registradas.
 4. Escribe cualquier pregunta en lenguaje natural o **envía un mensaje de voz/audio**:
    - Pulsa el micrófono en Telegram y haz tu pregunta hablando (ej. *"¿Cómo viene mi progresión de press de banca?"*).
-   - El bot transcribirá el audio con Gemini a texto, te mostrará la transcripción y responderá con el análisis técnico de tus datos.
+    - El bot transcribirá el audio con Whisper (Groq) a texto, te mostrará la transcripción y responderá con el análisis técnico de tus datos.
    - *"¿Qué ejercicios hice el martes pasado?"*
    - *"Revisa si tengo anotadas molestias en hombros o rodillas."*
 
@@ -265,4 +311,4 @@ GymBot está optimizado para entender anotaciones humanas en lenguaje natural:
 - `Dominadas: lastre 15kg 3x5 + fallo sin lastre`
 - `Elevaciones laterales 12kg fallo, dropset a 8kg`
 
-¡Gemini 2.5 Flash interpretará automáticamente las cargas, RPE, series de aproximación vs efectivas y tus sensaciones personales!
+¡El router decidirá qué registros hacen falta y el modelo adecuado (Groq o DeepSeek) interpretará automáticamente las cargas, RPE, series de aproximación vs efectivas y tus sensaciones personales!

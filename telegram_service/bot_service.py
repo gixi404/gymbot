@@ -149,7 +149,7 @@ class GymTelegramBot:
                 InlineKeyboardButton("🏋️ Press Banca", callback_data="chart_banca"),
             ],
             [
-                InlineKeyboardButton("🦵 Sentadilla", callback_data="chart_sentadilla"),
+                InlineKeyboardButton("🦵 Prensa", callback_data="chart_prensa"),
                 InlineKeyboardButton("🍑 Hip Thrust", callback_data="chart_hip_thrust"),
             ],
             [
@@ -164,10 +164,9 @@ class GymTelegramBot:
         buttons = [
             [
                 InlineKeyboardButton("Press Banca", callback_data="prog_banca"),
-                InlineKeyboardButton("Sentadilla", callback_data="prog_sentadilla"),
+                InlineKeyboardButton("Prensa", callback_data="prog_prensa"),
             ],
             [
-                InlineKeyboardButton("Prensa", callback_data="prog_prensa"),
                 InlineKeyboardButton("Hip Thrust", callback_data="prog_hip_thrust"),
             ],
             [
@@ -225,6 +224,20 @@ class GymTelegramBot:
             await message.reply_document(document=document, filename=filename, caption=caption, parse_mode=parse_mode)
         except Exception:
             await message.reply_document(document=document, filename=filename, caption=caption)
+
+    def _remember(self, user_id: str, user_text: str, bot_reply: str) -> None:
+        """Registra un intercambio de comando/botón en la memoria conversacional activa.
+
+        Solo se usa para respuestas analíticas (macros, progresión, resumen semanal),
+        no para comandos de sistema (stats, sync, export, gráficos).
+        """
+        if not bot_reply:
+            return
+        try:
+            self.database.add_conversation_message(str(user_id), "user", user_text)
+            self.database.add_conversation_message(str(user_id), "model", bot_reply)
+        except Exception as e:
+            logger.warning("No se pudo registrar memoria conversacional: %s", e)
 
     async def _background_sync_safe(self) -> None:
         """Sincroniza en segundo plano sin bloquear ni añadir latencia a las consultas."""
@@ -325,6 +338,7 @@ class GymTelegramBot:
             else:
                 result = await loop.run_in_executor(None, self.analyzer.analyze_nutrition_today)
             await self._safe_reply(update.message, result)
+        self._remember(str(update.effective_user.id), f"/macros {date_arg or ''}".strip(), result)
 
     async def _handle_progression(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /proxima [ejercicio]."""
@@ -345,6 +359,7 @@ class GymTelegramBot:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, lambda: self.analyzer.recommend_next_progression(ex_name))
             await self._safe_reply(update.message, result)
+        self._remember(str(update.effective_user.id), f"/proxima {ex_name}", result)
 
     async def _handle_weekly(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /semana o /resumen."""
@@ -355,6 +370,7 @@ class GymTelegramBot:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, self.analyzer.generate_weekly_summary)
             await self._safe_reply(update.message, result)
+        self._remember(str(update.effective_user.id), "/semana", result)
 
     async def _handle_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /export o /backup."""
@@ -411,8 +427,8 @@ class GymTelegramBot:
             await self._generate_and_send_chart(msg, "peso")
         elif data == "chart_banca":
             await self._generate_and_send_chart(msg, "banca")
-        elif data == "chart_sentadilla":
-            await self._generate_and_send_chart(msg, "sentadilla")
+        elif data == "chart_prensa":
+            await self._generate_and_send_chart(msg, "prensa")
         elif data == "chart_hip_thrust":
             await self._generate_and_send_chart(msg, "hip thrust")
         elif data.startswith("prog_"):
@@ -421,16 +437,19 @@ class GymTelegramBot:
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, lambda: self.analyzer.recommend_next_progression(ex_name))
                 await self._safe_reply(msg, result)
+            self._remember(str(user_id), f"/proxima {ex_name}", result)
         elif data == "btn_weekly":
             async with _send_typing_action(msg.chat):
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, self.analyzer.generate_weekly_summary)
                 await self._safe_reply(msg, result)
+            self._remember(str(user_id), "/semana", result)
         elif data == "btn_macros":
             async with _send_typing_action(msg.chat):
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, self.analyzer.analyze_nutrition_today)
                 await self._safe_reply(msg, result)
+            self._remember(str(user_id), "/macros", result)
         elif data == "btn_stats":
             stats = self.database.get_stats(self.settings.TELEGRAM_WORKOUT_CHAT_ID)
             stats_text = (
@@ -501,7 +520,7 @@ class GymTelegramBot:
         help_text = (
             "🏋️ *Ejemplos de consultas que puedes hacerme:*\n\n"
             "• _¿Cuál fue mi mejor press de banca este mes?_\n"
-            "• _¿Qué pesos y series hice en sentadillas la última sesión?_\n"
+            "• _¿Qué pesos y series hice en prensa la última sesión?_\n"
             "• _Calcula mi 1RM estimado en peso muerto según mis últimos registros._\n"
             "• _¿En qué ejercicios tengo notas de molestias articulares o fatiga?_\n"
             "• _¿Cómo ha sido mi progresión en dominadas las últimas 4 semanas?_\n"
@@ -668,26 +687,51 @@ class GymTelegramBot:
             user_id = str(update.effective_user.id)
             active_memory = self.database.get_active_memory(user_id, limit=8)
 
-            # Analizamos la consulta transcrita
+            # Analizamos la consulta transcrita con streaming incremental (igual que el texto)
+            placeholder = await message.reply_text("✍️ ...")
+            full_text = ""
+            last_edit_time = time.monotonic()
+            edit_interval = 0.8  # Respetar rate limits de Telegram (~1 edit por segundo)
+
             try:
-                response_text = await loop.run_in_executor(
-                    None,
-                    lambda: self.analyzer.analyze_query(transcription, conversation_history=active_memory),
-                )
+                async for chunk in self.analyzer.analyze_query_stream_async(
+                    transcription,
+                    conversation_history=active_memory,
+                ):
+                    full_text += chunk
+                    now = time.monotonic()
+                    if now - last_edit_time >= edit_interval and len(full_text) > 10:
+                        try:
+                            preview = full_text if len(full_text) < 3900 else (full_text[:3900] + "...")
+                            await placeholder.edit_text(preview + " ▌")
+                            last_edit_time = now
+                        except Exception:
+                            pass
+
+                final_text = full_text.strip() or "No se obtuvo respuesta del modelo."
+
+                # Guardamos en el historial persistente de la sesión
+                self.database.add_conversation_message(user_id, "user", transcription)
+                self.database.add_conversation_message(user_id, "model", final_text)
+
+                chunks = _split_long_message(final_text)
+                await self._safe_edit(placeholder, chunks[0])
+                for extra_chunk in chunks[1:]:
+                    await self._safe_reply(message, extra_chunk)
+
             except Exception as e:
-                logger.error("Error analizando consulta transcrita: %s", e)
-                response_text = f"❌ Ocurrió un error al procesar tu consulta: {str(e)}"
-
-            # Guardamos en el historial persistente de la sesión
-            self.database.add_conversation_message(user_id, "user", transcription)
-            self.database.add_conversation_message(user_id, "model", response_text)
-
-            chunks = _split_long_message(response_text)
-            for chunk in chunks:
+                logger.error("Error en streaming de voz: %s", e)
+                # Fallback seguro con ejecución síncrona
                 try:
-                    await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    await message.reply_text(chunk)
+                    response_text = await loop.run_in_executor(
+                        None,
+                        lambda: self.analyzer.analyze_query(transcription, conversation_history=active_memory),
+                    )
+                except Exception as ex:
+                    response_text = f"❌ Ocurrió un error al procesar tu consulta: {ex}"
+                self.database.add_conversation_message(user_id, "user", transcription)
+                self.database.add_conversation_message(user_id, "model", response_text)
+                await self._safe_edit(placeholder, response_text)
 
     async def _handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Procesa fotos enviadas por el usuario y las analiza con Gemini respetando el contexto."""
@@ -714,7 +758,8 @@ class GymTelegramBot:
                 return
 
             user_query = (message.caption or "").strip()
-            if not user_query:
+            attachment_default = not user_query
+            if attachment_default:
                 user_query = "Analiza detalladamente esta imagen en el contexto de mis entrenamientos y directivas."
 
             user_id = str(update.effective_user.id)
@@ -729,6 +774,7 @@ class GymTelegramBot:
                         user_query,
                         conversation_history=active_memory,
                         attachments=attachments,
+                        attachment_default=attachment_default,
                     ),
                 )
             except Exception as e:
@@ -779,7 +825,8 @@ class GymTelegramBot:
                 return
 
             user_query = (message.caption or "").strip()
-            if not user_query:
+            attachment_default = not user_query
+            if attachment_default:
                 user_query = f"Analiza detalladamente este documento ({file_name}) en el contexto de mis entrenamientos y directivas."
 
             user_id = str(update.effective_user.id)
@@ -794,6 +841,7 @@ class GymTelegramBot:
                         user_query,
                         conversation_history=active_memory,
                         attachments=attachments,
+                        attachment_default=attachment_default,
                     ),
                 )
             except Exception as e:

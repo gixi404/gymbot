@@ -63,10 +63,14 @@ class TestFeatures(unittest.TestCase):
         chart_callbacks = [btn.callback_data for row in chart_kb.inline_keyboard for btn in row]
         self.assertIn("chart_weight", chart_callbacks)
         self.assertIn("chart_banca", chart_callbacks)
+        self.assertIn("chart_prensa", chart_callbacks)
+        self.assertNotIn("chart_sentadilla", chart_callbacks)
 
         prog_kb = GymTelegramBot._get_progression_keyboard()
         prog_callbacks = [btn.callback_data for row in prog_kb.inline_keyboard for btn in row]
         self.assertIn("prog_banca", prog_callbacks)
+        self.assertIn("prog_prensa", prog_callbacks)
+        self.assertNotIn("prog_sentadilla", prog_callbacks)
 
     def test_analyzer_helper_methods(self):
         mock_gemini = MagicMock()

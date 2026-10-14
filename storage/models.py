@@ -1,7 +1,21 @@
 """Modelos de datos para el almacenamiento local de GymBot."""
 
+import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+ATLETA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+
+
+def to_atleta_tz(dt: datetime) -> datetime:
+    """Normaliza una fecha a la zona horaria del atleta.
+
+    Si es naive se asume UTC (así vienen de Telethon/SQLite); si es aware se convierte.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(ATLETA_TZ)
 
 
 @dataclass
@@ -18,10 +32,16 @@ class RawMessage:
     created_at: datetime | None = None
 
     def to_summary_line(self) -> str:
-        """Formatea el mensaje para la ventana de contexto de IA con fecha y texto."""
-        date_str = self.date.strftime("%Y-%m-%d %H:%M")
+        """Formatea el mensaje para la ventana de contexto de IA (compacto, sin truncar).
+
+        La fecha de envío se rotula `[enviado: ...]` en hora de Argentina para que el
+        LLM no la confunda con una fecha escrita dentro del propio texto.
+        """
+        date_str = to_atleta_tz(self.date).strftime("%d/%m/%Y")
         origin = f" [{self.chat_title}]" if self.chat_title else ""
-        return f"[{date_str}]{origin} (Msg #{self.id}):\n{self.text.strip()}\n"
+        # Colapsar saltos de línea múltiples por ' | ', mantener texto completo
+        text = re.sub(r"\s*\n\s*", " | ", self.text.strip())
+        return f"[enviado: {date_str}]{origin} {text}"
 
 
 @dataclass

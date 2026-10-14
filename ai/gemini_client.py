@@ -1,5 +1,6 @@
 """Cliente de Google GenAI usando el SDK oficial (google-genai) para gemini-2.5-flash."""
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
@@ -12,16 +13,19 @@ from config.settings import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
-# Modelos candidatos en orden de prioridad (todos verificados, octubre 2026).
-# Si el modelo principal (GEMINI_MODEL) falla, se prueba el siguiente inmediatamente.
-# Cuando todos fallen, se repite la rotación completa hasta MAX_GLOBAL_PASSES veces.
+# Modelos candidatos en orden de prioridad (verificados con la API key actual).
+# Los modelos NO-lite (gemini-3.5-flash, gemini-flash-latest) devuelven 503 UNAVAILABLE
+# de forma consistente y se excluyeron tras las pruebas de latencia (octubre 2026).
 _FALLBACK_MODELS = (
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
+    "gemini-flash-lite-latest",  # Apunta siempre a la última versión lite estable
 )
+RATE_LIMIT_BACKOFF = 2.0  # Segundos de espera ante un error 429 (rate limit del Free Tier)
 MAX_GLOBAL_PASSES = 2  # Número máximo de pasadas completas sobre la lista de modelos
+
+
+def _is_rate_limit(error: APIError) -> bool:
+    """True si el error de Gemini es 429 (límite de peticiones del Free Tier)."""
+    return str(getattr(error, "code", "")) == "429"
 
 
 class GeminiClient:
@@ -94,6 +98,13 @@ class GeminiClient:
 
                 except APIError as e:
                     last_error = e
+                    if _is_rate_limit(e):
+                        logger.warning(
+                            "Rate limit (429) en '%s'. Esperando %.1f s antes de continuar...",
+                            current_model,
+                            RATE_LIMIT_BACKOFF,
+                        )
+                        time.sleep(RATE_LIMIT_BACKOFF)
                     logger.warning(
                         "Modelo '%s' falló (pasada %d/%d, código %s). Probando siguiente...",
                         current_model,
@@ -154,6 +165,13 @@ class GeminiClient:
                     return ""
                 except APIError as e:
                     last_error = e
+                    if _is_rate_limit(e):
+                        logger.warning(
+                            "Rate limit (429) al transcribir con '%s'. Esperando %.1f s...",
+                            current_model,
+                            RATE_LIMIT_BACKOFF,
+                        )
+                        time.sleep(RATE_LIMIT_BACKOFF)
                     logger.warning(
                         "Modelo '%s' falló al transcribir (pasada %d/%d, código %s). Probando siguiente...",
                         current_model,
@@ -231,6 +249,13 @@ class GeminiClient:
                         # Ya emitimos tokens parciales, no podemos recuperarnos
                         logger.error("Error de API intermedio tras emitir tokens con '%s': %s", current_model, e)
                         return
+                    if _is_rate_limit(e):
+                        logger.warning(
+                            "Rate limit (429) en streaming con '%s'. Esperando %.1f s...",
+                            current_model,
+                            RATE_LIMIT_BACKOFF,
+                        )
+                        await asyncio.sleep(RATE_LIMIT_BACKOFF)
                     logger.warning(
                         "Modelo '%s' falló en streaming (pasada %d/%d, código %s). Probando siguiente...",
                         current_model,
@@ -257,8 +282,6 @@ class GeminiClient:
                     pass_num,
                     MAX_GLOBAL_PASSES,
                 )
-                import asyncio
-
                 await asyncio.sleep(2.0)
 
         # Fallback síncrono si el streaming falló por completo sin emitir nada

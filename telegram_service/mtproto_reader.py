@@ -20,6 +20,18 @@ from config.settings import Settings, get_settings
 from storage.database import GymDatabase
 from storage.models import RawMessage
 
+
+# Mapeo inverso chat_id/título -> grupo lógico, derivado de GROUP_CHAT_MAP en settings.
+def _build_chat_id_to_group(settings: Settings) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for group, entries in (settings.GROUP_CHAT_MAP or {}).items():
+        for entry in entries:
+            key = str(entry).strip()
+            if key:
+                mapping[key] = group
+    return mapping
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +55,7 @@ class TelegramWorkoutReader:
         self.api_hash = self.settings.TELEGRAM_API_HASH
         self.session_name = self.settings.TELEGRAM_SESSION_NAME
         self.chat_ids: list[int | str] = self.settings.workout_chat_ids
+        self._chat_id_to_group = _build_chat_id_to_group(self.settings)
         self._sync_lock = asyncio.Lock()
         self._last_sync_timestamp: float = 0.0
 
@@ -145,7 +158,10 @@ class TelegramWorkoutReader:
                         logger.error("No se pudo resolver la entidad del chat '%s': %s", current_chat_id, e)
                         continue
 
-                    chat_title = getattr(entity, "title", None) or getattr(entity, "username", None) or ""
+                    # Nombre del grupo lógico (según GROUP_CHAT_MAP) o, si no está mapeado, el título real de Telegram.
+                    chat_title = self._chat_id_to_group.get(str(current_chat_id)) or (
+                        getattr(entity, "title", None) or getattr(entity, "username", None) or ""
+                    )
                     min_id = 0 if force_all else self.database.get_last_synced_id(current_chat_id)
                     logger.info(
                         "Iniciando sincronización de '%s' ('%s') (min_id=%d, force_all=%s)...",

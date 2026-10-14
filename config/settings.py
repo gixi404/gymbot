@@ -36,9 +36,40 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     ALLOWED_TELEGRAM_USER_IDS: list[int] = []
 
-    # 3. Inteligencia Artificial (Google GenAI)
+    # 3a. Inteligencia Artificial - Groq (proveedor principal de texto y audio)
+    GROQ_API_KEY: str = ""
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    # Modelo diminuto y barato que solo decide complejidad/grupos/ventana temporal.
+    # (Los IDs varían por cuenta/plan de Groq; verifica con `client.models.list()`.)
+    GROQ_CLASSIFIER_MODEL: str = "qwen/qwen3.8-27b"
+    # Modelo Groq para consultas simples (evita la congestión de Gemini).
+    GROQ_LIGHT_MODEL: str = "qwen/qwen3.8-27b"
+    GROQ_AUDIO_MODEL: str = "whisper-large-v3"
+    GROQ_MAX_OUTPUT_TOKENS: int = 1024
+    # Vacío por defecto: si el modelo ligero falla, se salta directo a DeepSeek.
+    # Añade IDs aquí solo si quieres reintentar con otros modelos de Groq primero.
+    GROQ_FALLBACK_MODELS: list[str] = []
+
+    # 3b. Inteligencia Artificial - DeepSeek (análisis complejo y respaldo de Groq)
+    DEEPSEEK_API_KEY: str = ""
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+    # "deepseek-chat" quedó deprecado en la API oficial; "deepseek-reasoner" añade razonamiento.
+    DEEPSEEK_MODEL: str = "deepseek-flash"
+    DEEPSEEK_MAX_OUTPUT_TOKENS: int = 2048
+
+    # 3c. Enrutador de consultas (Nivel 1) y enrutamiento de ejecución (Nivel 3)
+    # Umbral de tokens estimados por encima del cual una consulta "simple" sale de Groq
+    # (protege el límite gratuito de ~6.000 TPM de Groq).
+    ROUTER_TOKEN_THRESHOLD: int = 4200
+    # Cruce de 2+ grupos en una ventana mayor a estos días siempre va a DeepSeek.
+    ROUTER_MULTI_GROUP_DAYS: int = 14
+    # Mapa de grupos lógicos -> chats reales (IDs o títulos). Necesario porque los
+    # mensajes antiguos de la BD no tienen chat_title (ver ai/router.resolve_group_targets).
+    GROUP_CHAT_MAP: dict[str, list[str]] = {}
+
+    # 3c. Inteligencia Artificial - Google Gemini (visión y respaldo)
     GEMINI_API_KEY: str
-    GEMINI_MODEL: str = "gemini-3.5-flash"
+    GEMINI_MODEL: str = "gemini-flash-lite-latest"
 
     # 4. Persistencia Local y Sincronización
     DATABASE_PATH: Path = Path("gymbot.db")
@@ -46,10 +77,33 @@ class Settings(BaseSettings):
 
     @property
     def workout_chat_ids(self) -> list[int | str]:
-        """Devuelve una lista unificada de todos los IDs de chat configurados."""
-        if isinstance(self.TELEGRAM_WORKOUT_CHAT_ID, list):
-            return self.TELEGRAM_WORKOUT_CHAT_ID
-        return [self.TELEGRAM_WORKOUT_CHAT_ID]
+        """Lista unificada de chats a sincronizar.
+
+        Une TELEGRAM_WORKOUT_CHAT_ID con todos los IDs numéricos declarados en
+        GROUP_CHAT_MAP, para no depender de mantener ambos campos en sincronía.
+        """
+        base = (
+            self.TELEGRAM_WORKOUT_CHAT_ID
+            if isinstance(self.TELEGRAM_WORKOUT_CHAT_ID, list)
+            else [self.TELEGRAM_WORKOUT_CHAT_ID]
+        )
+        ids: list[int | str] = []
+        seen: set[str] = set()
+
+        def add(value: int | str) -> None:
+            key = str(value)
+            if key not in seen:
+                seen.add(key)
+                ids.append(value)
+
+        for item in base:
+            add(item)
+        for entries in (self.GROUP_CHAT_MAP or {}).values():
+            for entry in entries:
+                text = str(entry).strip()
+                if text.lstrip("-").isdigit():
+                    add(int(text))
+        return ids
 
     @field_validator("TELEGRAM_WORKOUT_CHAT_ID", mode="before")
     @classmethod

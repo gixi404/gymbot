@@ -4,6 +4,7 @@ import csv
 import io
 import logging
 import sqlite3
+import unicodedata
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -12,6 +13,14 @@ from pathlib import Path
 from .models import DatabaseStats, RawMessage
 
 logger = logging.getLogger(__name__)
+
+
+def _unaccent(value: str | None) -> str | None:
+    """Quita diacríticos para búsquedas insensibles a tildes ('jalon' == 'Jalón')."""
+    if value is None:
+        return None
+    decomposed = unicodedata.normalize("NFD", str(value))
+    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
 
 
 class GymDatabase:
@@ -31,6 +40,7 @@ class GymDatabase:
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
         )
         conn.row_factory = sqlite3.Row
+        conn.create_function("unaccent", 1, _unaccent, deterministic=True)
         try:
             # Optimizaciones de rendimiento y concurrencia por conexión
             conn.execute("PRAGMA synchronous = NORMAL;")
@@ -109,6 +119,19 @@ class GymDatabase:
                 """
                 CREATE INDEX IF NOT EXISTS idx_raw_messages_date
                 ON raw_messages (date ASC);
+                """
+            )
+            # Índices compuestos para filtros por grupo + rango temporal + orden
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_raw_messages_chat_title_date
+                ON raw_messages (chat_title, date ASC);
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_raw_messages_chat_id_date
+                ON raw_messages (chat_id, date ASC);
                 """
             )
             conn.execute(
@@ -234,6 +257,21 @@ class GymDatabase:
             conn.execute(query, (cid, last_message_id, now_iso, total_messages))
 
     @staticmethod
+    def _group_filter_clause(titles: list[str] | None, chat_ids: list[str] | None) -> tuple[list[str], list[str]]:
+        """Cláusulas SQL (OR entre título y chat_id) para filtrar por grupos lógicos."""
+        clauses: list[str] = []
+        params: list[str] = []
+        if titles:
+            placeholders = ",".join("?" * len(titles))
+            clauses.append(f"LOWER(chat_title) IN ({placeholders})")
+            params.extend(t.lower() for t in titles)
+        if chat_ids:
+            placeholders = ",".join("?" * len(chat_ids))
+            clauses.append(f"chat_id IN ({placeholders})")
+            params.extend(chat_ids)
+        return clauses, params
+
+    @staticmethod
     def _row_to_raw_message(row: sqlite3.Row) -> RawMessage:
         """Mapea una fila de base de datos a una instancia de RawMessage."""
         col_names = row.keys()
@@ -254,10 +292,13 @@ class GymDatabase:
         until: datetime | None = None,
         limit: int | None = None,
         reverse: bool = False,
+        titles: list[str] | None = None,
+        chat_ids: list[str] | None = None,
     ) -> list[RawMessage]:
         """Obtiene los mensajes registrados ordenados por fecha.
 
         Por defecto, reverse=False devuelve los mensajes en orden cronológico (más antiguo a más reciente).
+        `titles`/`chat_ids` restringen a grupos lógicos concretos (ver ai.router.resolve_group_targets).
         """
         conditions = []
         params = []
@@ -268,6 +309,11 @@ class GymDatabase:
         if until:
             conditions.append("date <= ?")
             params.append(until.isoformat())
+
+        group_clauses, group_params = self._group_filter_clause(titles, chat_ids)
+        if group_clauses:
+            conditions.append("(" + " OR ".join(group_clauses) + ")")
+            params.extend(group_params)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         order_dir = "DESC" if reverse else "ASC"
@@ -339,11 +385,14 @@ class GymDatabase:
             )
 
     def search_messages(self, query_term: str, limit: int = 50) -> list[RawMessage]:
-        """Búsqueda simple por palabra clave dentro del texto de entrenamientos."""
+        """Búsqueda simple por palabra clave dentro del texto de entrenamientos.
+
+        Insensible a tildes y mayúsculas: 'jalon' encuentra 'Jalón'.
+        """
         query = """
         SELECT id, chat_id, chat_title, date, text, edit_date, media_type, created_at
         FROM raw_messages
-        WHERE text LIKE ?
+        WHERE unaccent(text) LIKE unaccent(?)
         ORDER BY date DESC
         LIMIT ?;
         """
@@ -401,10 +450,10 @@ class GymDatabase:
             return [{"role": r["role"], "text": r["content"]} for r in reversed(rows)]
 
     def reset_active_memory(self, user_id: str) -> int:
-        """Reinicia la memoria activa incrementando el session_id.
+        """Reinicia la memoria activa: incrementa el session_id y borra los mensajes del usuario.
 
-        IMPORTANTE: NO borra los mensajes anteriores de la base de datos;
-        el historial completo de conversaciones permanece intacto para consulta.
+        Se eliminan los mensajes de `conversation_messages` para que la tabla no
+        acumule basura indefinidamente con el paso de los meses.
         Retorna el nuevo session_id.
         """
         current_id = self.get_current_session_id(user_id)
@@ -420,8 +469,12 @@ class GymDatabase:
                 """,
                 (str(user_id), new_id),
             )
+            conn.execute(
+                "DELETE FROM conversation_messages WHERE user_id = ?;",
+                (str(user_id),),
+            )
         logger.info(
-            "Memoria de sesión reiniciada para usuario '%s': sesión %d -> %d",
+            "Memoria de sesión reiniciada para usuario '%s': sesión %d -> %d (mensajes borrados)",
             user_id,
             current_id,
             new_id,

@@ -3,6 +3,7 @@
 import io
 import logging
 import re
+import unicodedata
 from datetime import datetime
 
 import matplotlib
@@ -192,12 +193,54 @@ class ChartGenerator:
         finally:
             plt.close(fig)
 
+    # Ejercicios accesorios: si el header arranca con uno de estos y la búsqueda
+    # no lo menciona, es un falso positivo (p. ej. "Gemelos en prensa" al buscar
+    # "prensa"). Lista curada contra los formatos reales de la BD.
+    _ACCESSORY_HEADS = ("gemelos", "gemelo", "antebrazo", "antebrazob")
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Minúsculas sin tildes para matching robusto ('Jalón' == 'jalon')."""
+        decomposed = unicodedata.normalize("NFD", text.lower())
+        return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+
+    @staticmethod
+    def _parse_set_block(text: str) -> tuple[float, list[int]] | None:
+        """Extrae (peso_kg, [reps]) de una línea tipo '145 kg 11.10.9', '60kg 10 8 8 8',
+        '32.5 12 10 8 8' o '80kg 3x8'. Devuelve None si no hay bloque válido."""
+        match = re.search(r"(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:kgs?|kh)?\s*(.*)$", text.strip(), re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            weight = float(match.group(1).replace(",", "."))
+        except ValueError:
+            return None
+        if not (2.0 <= weight <= 500.0):
+            return None
+
+        tail = match.group(2)
+        cross = re.search(r"(\d{1,2})\s*[xX*]\s*(\d{1,2})", tail)
+        if cross:
+            reps = [int(cross.group(2))]
+        else:
+            reps = [int(n) for n in re.findall(r"\d{1,2}", tail)]
+        reps = [r for r in reps if 1 <= r <= 60]
+        if not reps:
+            return None
+        return weight, reps
+
     @classmethod
     def parse_exercise_data(
         cls, exercise_query: str, messages: list[RawMessage]
     ) -> tuple[str, list[tuple[datetime, float, float]]]:
-        """Busca un ejercicio y extrae (fecha, carga_maxima, 1rm_estimado_maximo) por sesión."""
-        query_norm = exercise_query.strip().lower()
+        """Busca un ejercicio y extrae (fecha, carga_maxima, 1rm_estimado_maximo) por sesión.
+
+        Soporta los formatos reales de la BD: líneas que empiezan con '-', '*' o
+        directamente el nombre seguido de ':' o '('; series en la misma línea o en
+        las líneas siguientes.
+        """
+        query_norm = cls._normalize(exercise_query.strip())
+        query_tokens = [t for t in re.split(r"\W+", query_norm) if t]
         matched_canonical = ""
         sessions: dict[str, tuple[datetime, float, float]] = {}
 
@@ -208,59 +251,49 @@ class ChartGenerator:
 
             lines = msg.text.split("\n")
             for idx, line in enumerate(lines):
-                line_clean = line.strip()
-                if not line_clean.startswith("-"):
+                stripped = line.strip().lstrip("-*•").strip()
+                if not stripped:
                     continue
 
-                ex_header = line_clean.lstrip("-").split(":")[0].strip()
-                ex_name_clean = re.sub(r"\(.*?\)", "", ex_header).strip()
+                header_match = re.match(r"^([^:()\n]+?)\s*[:(]", stripped)
+                if not header_match:
+                    continue
+                ex_name = header_match.group(1).strip()
+                if not re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", ex_name):
+                    continue
 
-                if query_norm in ex_name_clean.lower() or any(w in ex_name_clean.lower() for w in query_norm.split()):
-                    if not matched_canonical:
-                        matched_canonical = ex_name_clean
+                name_norm = cls._normalize(ex_name)
+                if not all(token in name_norm for token in query_tokens):
+                    continue
 
-                    # Buscar las líneas siguientes con las series
-                    sub_text = " ".join(lines[idx + 1 : idx + 4])
+                # Excluir accesorios (p. ej. "Gemelos en prensa" al buscar "prensa")
+                first_word = re.split(r"\W+", name_norm)[0]
+                if first_word in cls._ACCESSORY_HEADS and first_word not in query_tokens:
+                    continue
 
-                    # Caso A: '53 kg 13.12.11' o '80 kg 12.10.8' (formato común del usuario)
-                    dot_match = re.search(
-                        r"(\d+(?:[.,]\d+)?)\s*kg\s+(\d+(?:[.,]\d+)+)",
-                        sub_text,
-                        re.IGNORECASE,
-                    )
-                    if dot_match:
-                        weight = float(dot_match.group(1).replace(",", "."))
-                        reps_str = dot_match.group(2)
-                        reps_list = [int(r) for r in re.split(r"[.,]", reps_str) if r.isdigit()]
-                        if reps_list:
-                            max_rep = max(reps_list)
-                            # Epley: w * (1 + r/30)
-                            est_1rm = weight * (1.0 + max_rep / 30.0)
-                            session_key = msg.date.strftime("%Y-%m-%d")
-                            curr = sessions.get(session_key, (msg.date, 0.0, 0.0))
-                            sessions[session_key] = (
-                                msg.date,
-                                max(curr[1], weight),
-                                max(curr[2], est_1rm),
-                            )
-                        continue
+                # Bloque de series: primero la misma línea, luego las 3 siguientes
+                rest = stripped[header_match.end(1) :]
+                block = cls._parse_set_block(rest)
+                if block is None:
+                    for nxt in lines[idx + 1 : idx + 4]:
+                        block = cls._parse_set_block(nxt)
+                        if block is not None:
+                            break
+                if block is None:
+                    continue
 
-                    # Caso B: '80kg 3x8' o '80 x 8'
-                    std_match = re.search(
-                        r"(\d+(?:[.,]\d+)?)\s*(?:kg)?\s*[xX*]\s*(\d+)",
-                        sub_text,
-                    )
-                    if std_match:
-                        weight = float(std_match.group(1).replace(",", "."))
-                        reps = int(std_match.group(2))
-                        est_1rm = weight * (1.0 + reps / 30.0)
-                        session_key = msg.date.strftime("%Y-%m-%d")
-                        curr = sessions.get(session_key, (msg.date, 0.0, 0.0))
-                        sessions[session_key] = (
-                            msg.date,
-                            max(curr[1], weight),
-                            max(curr[2], est_1rm),
-                        )
+                if not matched_canonical:
+                    matched_canonical = ex_name
+
+                weight, reps_list = block
+                est_1rm = weight * (1.0 + max(reps_list) / 30.0)  # Epley
+                session_key = msg.date.strftime("%Y-%m-%d")
+                curr = sessions.get(session_key, (msg.date, 0.0, 0.0))
+                sessions[session_key] = (
+                    msg.date,
+                    max(curr[1], weight),
+                    max(curr[2], est_1rm),
+                )
 
         result_list = sorted(sessions.values(), key=lambda x: x[0])
         return matched_canonical or exercise_query.title(), result_list

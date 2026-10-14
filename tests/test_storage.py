@@ -108,7 +108,18 @@ class TestGymDatabase(unittest.TestCase):
         ids = {r.id for r in results}
         self.assertEqual(ids, {1, 3})
 
-    def test_conversation_memory_and_clear_preserves_history(self):
+    def test_search_messages_is_accent_and_case_insensitive(self):
+        msgs = [
+            RawMessage(id=1, date=datetime.now(), text="Jalón al pecho 50kg"),
+            RawMessage(id=2, date=datetime.now(), text="JALÓN abierto 55kg"),
+        ]
+        self.db.upsert_messages(msgs)
+
+        for term in ("jalon", "Jalón", "JALON", "jalón"):
+            results = self.db.search_messages(term, limit=10)
+            self.assertEqual({r.id for r in results}, {1, 2}, msg=f"falló con {term!r}")
+
+    def test_conversation_memory_and_clear_deletes_user_messages(self):
         user_id = "test_user_123"
 
         # Sesión inicial debe ser 1
@@ -133,14 +144,13 @@ class TestGymDatabase(unittest.TestCase):
         active_after_clear = self.db.get_active_memory(user_id)
         self.assertEqual(len(active_after_clear), 0)
 
-        # PERO en la base de datos TODOS los mensajes siguen existiendo (historial no borrado)
+        # Y en la base de datos los mensajes del usuario se BORRAN (sin basura acumulada)
         with self.db.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT COUNT(*) as count FROM conversation_messages WHERE user_id = ?;",
                 (user_id,),
             )
-            total_historical_messages = cursor.fetchone()["count"]
-            self.assertEqual(total_historical_messages, 2)
+            self.assertEqual(cursor.fetchone()["count"], 0)
 
         # Enviar nuevo mensaje en la nueva sesión
         self.db.add_conversation_message(user_id, "user", "Hola, empezamos de nuevo.")
@@ -148,13 +158,13 @@ class TestGymDatabase(unittest.TestCase):
         self.assertEqual(len(active_session_2), 1)
         self.assertEqual(active_session_2[0]["text"], "Hola, empezamos de nuevo.")
 
-        # Historial total en BD ahora es 3
+        # El único mensaje en BD es el nuevo
         with self.db.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT COUNT(*) as count FROM conversation_messages WHERE user_id = ?;",
                 (user_id,),
             )
-            self.assertEqual(cursor.fetchone()["count"], 3)
+            self.assertEqual(cursor.fetchone()["count"], 1)
 
     def test_get_stats_with_channel_id_list(self):
         # Registramos sincronización para dos canales distintos
@@ -190,7 +200,7 @@ class TestGymDatabase(unittest.TestCase):
         # Comprobar formato to_summary_line
         summary_gym = msg_gym.to_summary_line()
         self.assertIn("[GYM]", summary_gym)
-        self.assertIn("(Msg #100)", summary_gym)
+        self.assertIn("Press militar 60kg", summary_gym)
 
         summary_food = msg_food.to_summary_line()
         self.assertIn("[Comidas]", summary_food)
