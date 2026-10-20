@@ -121,6 +121,36 @@ class TestBotWhitelistAuthorization(unittest.TestCase):
         asyncio.run(bot._handle_document(unauth_update, MagicMock()))
         unauth_update.message.reply_text.assert_not_called()
 
+    def test_loading_placeholder_is_pensando(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        settings = Settings(
+            TELEGRAM_API_ID=123,
+            TELEGRAM_API_HASH="abc",
+            TELEGRAM_WORKOUT_CHAT_ID=-1001,
+            TELEGRAM_BOT_TOKEN="token",
+            ALLOWED_TELEGRAM_USER_IDS="100",
+            GEMINI_API_KEY="key",
+        )
+        analyzer = MagicMock()
+        analyzer.analyze_nutrition_today.return_value = "TOTAL: 2500 kcal"
+        bot = GymTelegramBot(
+            settings=settings,
+            database=MagicMock(),
+            reader=MagicMock(),
+            analyzer=analyzer,
+        )
+
+        auth_update = MagicMock()
+        auth_update.effective_user.id = 100
+        placeholder_mock = AsyncMock()
+        auth_update.message.reply_text = AsyncMock(return_value=placeholder_mock)
+
+        asyncio.run(bot._handle_macros(auth_update, MagicMock()))
+        # Verify the placeholder was called with exactly "Pensando..."
+        auth_update.message.reply_text.assert_called_with("Pensando...")
+
 
 if __name__ == "__main__":
     unittest.main()

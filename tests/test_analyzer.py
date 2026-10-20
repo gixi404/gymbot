@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from ai.analyzer import GymAnalyzer
+from ai.analyzer import GymAnalyzer, clean_markdown_to_plain_text
 from config.settings import Settings
 from storage.database import GymDatabase
 from storage.models import RawMessage
@@ -81,6 +81,57 @@ class TestGymAnalyzer(unittest.TestCase):
         prompt_passed = call_args[1]["prompt"] if "prompt" in call_args[1] else call_args[0][0]
         self.assertIn("Press Militar: 50kg 4x6", prompt_passed)
         self.assertIn("¿Cuál fue mi mejor press militar?", prompt_passed)
+
+    def test_clean_markdown_to_plain_text(self):
+        sample = (
+            "## Opción 1\n"
+            "**Recomendacion**: Realizar 3 series efectivas.\n"
+            "**Nota importante**\n"
+            "* Desayuno: 50g avena\n"
+            "* Almuerzo: 100g pollo\n"
+            "### Calorías y macros\n"
+            "Total estimado en `2800` kcal."
+        )
+        cleaned = clean_markdown_to_plain_text(sample)
+        self.assertNotIn("##", cleaned)
+        self.assertNotIn("###", cleaned)
+        self.assertNotIn("**", cleaned)
+        self.assertNotIn("`", cleaned)
+        self.assertIn("OPCIÓN 1", cleaned)
+        self.assertIn("RECOMENDACION:", cleaned)
+        self.assertIn("NOTA IMPORTANTE", cleaned)
+        self.assertIn("CALORÍAS Y MACROS", cleaned)
+        self.assertIn("- Desayuno: 50g avena", cleaned)
+
+        # Test numbered and bulleted bold headers
+        sample2 = "1. **Desayuno:** 50g avena\n- **Almuerzo:** 100g pollo"
+        cleaned2 = clean_markdown_to_plain_text(sample2)
+        self.assertIn("1. DESAYUNO: 50g avena", cleaned2)
+        self.assertIn("- ALMUERZO: 100g pollo", cleaned2)
+
+    def test_msg_event_date_handling(self):
+        send_time = datetime(2026, 10, 15, 14, 0, 0)
+
+        # Case 1: Date written with year inside text
+        msg_with_date = RawMessage(id=1, date=send_time, text="10/10/26 Desayuno: bowl de 20g")
+        parsed = self.analyzer._msg_event_date(msg_with_date)
+        self.assertEqual(parsed, date(2026, 10, 10))
+
+        # Case 2: Text containing food fractions (1/2 manzana) should NOT be parsed as Feb 1st
+        msg_fraction = RawMessage(id=2, date=send_time, text="Desayuno: 1/2 manzana y 1/4 taza de avena")
+        parsed_fraction = self.analyzer._msg_event_date(msg_fraction)
+        # Should fall back to the send_time date (15/10/2026), NOT 01/02/2026
+        self.assertEqual(parsed_fraction, date(2026, 10, 15))
+
+    def test_invalidate_cache(self):
+        self.analyzer._cached_context = "test context"
+        self.analyzer._cached_total_messages = 5
+        self.analyzer._cached_last_sync = datetime.now()
+
+        self.analyzer.invalidate_cache()
+        self.assertIsNone(self.analyzer._cached_context)
+        self.assertEqual(self.analyzer._cached_total_messages, -1)
+        self.assertIsNone(self.analyzer._cached_last_sync)
 
     def test_get_system_instruction_includes_custom_directives(self):
         # Verify the method returns the default base instruction

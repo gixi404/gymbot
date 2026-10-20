@@ -20,7 +20,7 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-from ai.analyzer import GymAnalyzer
+from ai.analyzer import GymAnalyzer, clean_markdown_to_plain_text
 from config.settings import Settings, get_settings
 from storage.database import GymDatabase
 from telegram_service.mtproto_reader import TelegramWorkoutReader
@@ -195,20 +195,42 @@ class GymTelegramBot:
         return False
 
     @staticmethod
-    async def _safe_reply(message, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup=None) -> None:
-        """Sends a message trying Markdown format, with automatic fallback to plain text."""
+    async def _safe_reply(message, text: str, parse_mode: str | None = ParseMode.MARKDOWN, reply_markup=None) -> None:
+        """Sends a message trying Markdown format if parse_mode is set, with automatic fallback to plain text."""
         try:
-            await message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+            if parse_mode:
+                await message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+            else:
+                await message.reply_text(text, reply_markup=reply_markup)
         except Exception:
-            await message.reply_text(text, reply_markup=reply_markup)
+            if parse_mode:
+                try:
+                    await message.reply_text(text, reply_markup=reply_markup)
+                except Exception as ex:
+                    logger.warning("Could not send reply: %s", ex)
+            else:
+                logger.warning("Could not send reply: %s", text[:50])
 
     @staticmethod
-    async def _safe_edit(message, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup=None) -> None:
-        """Edits a message trying Markdown format, with automatic fallback to plain text."""
+    async def _safe_edit(message, text: str, parse_mode: str | None = ParseMode.MARKDOWN, reply_markup=None) -> None:
+        """Edits a message trying Markdown format if parse_mode is set, with automatic fallback to plain text."""
         try:
-            await message.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
-        except Exception:
-            await message.edit_text(text, reply_markup=reply_markup)
+            if parse_mode:
+                await message.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+            else:
+                await message.edit_text(text, reply_markup=reply_markup)
+        except Exception as e:
+            if "not modified" in str(e).lower():
+                return
+            if parse_mode:
+                try:
+                    await message.edit_text(text, reply_markup=reply_markup)
+                except Exception as ex:
+                    if "not modified" in str(ex).lower():
+                        return
+                    logger.warning("Could not edit message: %s", ex)
+            else:
+                logger.warning("Could not edit message: %s", e)
 
     @staticmethod
     async def _safe_reply_photo(message, photo, caption: str = "", parse_mode: str = ParseMode.MARKDOWN) -> None:
@@ -216,7 +238,10 @@ class GymTelegramBot:
         try:
             await message.reply_photo(photo=photo, caption=caption, parse_mode=parse_mode)
         except Exception:
-            await message.reply_photo(photo=photo, caption=caption)
+            try:
+                await message.reply_photo(photo=photo, caption=caption)
+            except Exception as e:
+                logger.warning("Could not send photo: %s", e)
 
     @staticmethod
     async def _safe_reply_document(
@@ -226,7 +251,10 @@ class GymTelegramBot:
         try:
             await message.reply_document(document=document, filename=filename, caption=caption, parse_mode=parse_mode)
         except Exception:
-            await message.reply_document(document=document, filename=filename, caption=caption)
+            try:
+                await message.reply_document(document=document, filename=filename, caption=caption)
+            except Exception as e:
+                logger.warning("Could not send document: %s", e)
 
     def _remember(self, user_id: str, user_text: str, bot_reply: str) -> None:
         """Records a command/button exchange in the active conversational memory.
@@ -242,10 +270,22 @@ class GymTelegramBot:
         except Exception as e:
             logger.warning("Could not record conversational memory: %s", e)
 
+    async def _sync_before_query(self, min_interval_seconds: float = 10.0, timeout: float = 4.0) -> None:
+        """Runs a quick sync before answering queries to capture any newly sent or edited notes."""
+        try:
+            await asyncio.wait_for(
+                self.reader.sync_channel(min_interval_seconds=min_interval_seconds),
+                timeout=timeout,
+            )
+            self.analyzer.invalidate_cache()
+        except Exception as e:
+            logger.debug("Pre-query sync skipped or deferred: %s", e)
+
     async def _background_sync_safe(self) -> None:
         """Syncs in the background without blocking or adding latency to queries."""
         try:
             await self.reader.sync_channel(min_interval_seconds=30.0)
+            self.analyzer.invalidate_cache()
         except Exception as e:
             logger.debug("Background sync skipped or deferred: %s", e)
 
@@ -334,14 +374,22 @@ class GymTelegramBot:
         args = context.args or []
         date_arg = " ".join(args).strip() if args else None
 
+        placeholder = await update.message.reply_text("Pensando...")
+
         async with _send_typing_action(update.message.chat):
+            await self._sync_before_query()
             loop = asyncio.get_running_loop()
             if date_arg:
                 result = await loop.run_in_executor(None, lambda: self.analyzer.analyze_nutrition_by_date(date_arg))
             else:
                 result = await loop.run_in_executor(None, self.analyzer.analyze_nutrition_today)
-            await self._safe_reply(update.message, result)
-        self._remember(str(update.effective_user.id), f"/macros {date_arg or ''}".strip(), result)
+            clean_result = clean_markdown_to_plain_text(result)
+            chunks = _split_long_message(clean_result)
+            await self._safe_edit(placeholder, chunks[0], parse_mode=None)
+            for extra_chunk in chunks[1:]:
+                await self._safe_reply(update.message, extra_chunk, parse_mode=None)
+
+        self._remember(str(update.effective_user.id), f"/macros {date_arg or ''}".strip(), clean_result)
 
     async def _handle_progression(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Command /proxima [exercise]."""
@@ -358,22 +406,38 @@ class GymTelegramBot:
             return
 
         ex_name = " ".join(args).strip()
+        placeholder = await update.message.reply_text("Pensando...")
+
         async with _send_typing_action(update.message.chat):
+            await self._sync_before_query()
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, lambda: self.analyzer.recommend_next_progression(ex_name))
-            await self._safe_reply(update.message, result)
-        self._remember(str(update.effective_user.id), f"/proxima {ex_name}", result)
+            clean_result = clean_markdown_to_plain_text(result)
+            chunks = _split_long_message(clean_result)
+            await self._safe_edit(placeholder, chunks[0], parse_mode=None)
+            for extra_chunk in chunks[1:]:
+                await self._safe_reply(update.message, extra_chunk, parse_mode=None)
+
+        self._remember(str(update.effective_user.id), f"/proxima {ex_name}", clean_result)
 
     async def _handle_weekly(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Command /semana or /resumen."""
         if not self._is_authorized(update):
             return
 
+        placeholder = await update.message.reply_text("Pensando...")
+
         async with _send_typing_action(update.message.chat):
+            await self._sync_before_query()
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, self.analyzer.generate_weekly_summary)
-            await self._safe_reply(update.message, result)
-        self._remember(str(update.effective_user.id), "/semana", result)
+            clean_result = clean_markdown_to_plain_text(result)
+            chunks = _split_long_message(clean_result)
+            await self._safe_edit(placeholder, chunks[0], parse_mode=None)
+            for extra_chunk in chunks[1:]:
+                await self._safe_reply(update.message, extra_chunk, parse_mode=None)
+
+        self._remember(str(update.effective_user.id), "/semana", clean_result)
 
     async def _handle_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Command /exportar (alias /export, /backup)."""
@@ -436,23 +500,41 @@ class GymTelegramBot:
             await self._generate_and_send_chart(msg, "hip thrust")
         elif data.startswith("prog_"):
             ex_name = data.replace("prog_", "").replace("_", " ")
+            placeholder = await msg.reply_text("Pensando...")
             async with _send_typing_action(msg.chat):
+                await self._sync_before_query()
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, lambda: self.analyzer.recommend_next_progression(ex_name))
-                await self._safe_reply(msg, result)
-            self._remember(str(user_id), f"/proxima {ex_name}", result)
+                clean_result = clean_markdown_to_plain_text(result)
+                chunks = _split_long_message(clean_result)
+                await self._safe_edit(placeholder, chunks[0], parse_mode=None)
+                for extra_chunk in chunks[1:]:
+                    await self._safe_reply(msg, extra_chunk, parse_mode=None)
+            self._remember(str(user_id), f"/proxima {ex_name}", clean_result)
         elif data == "btn_weekly":
+            placeholder = await msg.reply_text("Pensando...")
             async with _send_typing_action(msg.chat):
+                await self._sync_before_query()
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, self.analyzer.generate_weekly_summary)
-                await self._safe_reply(msg, result)
-            self._remember(str(user_id), "/semana", result)
+                clean_result = clean_markdown_to_plain_text(result)
+                chunks = _split_long_message(clean_result)
+                await self._safe_edit(placeholder, chunks[0], parse_mode=None)
+                for extra_chunk in chunks[1:]:
+                    await self._safe_reply(msg, extra_chunk, parse_mode=None)
+            self._remember(str(user_id), "/semana", clean_result)
         elif data == "btn_macros":
+            placeholder = await msg.reply_text("Pensando...")
             async with _send_typing_action(msg.chat):
+                await self._sync_before_query()
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, self.analyzer.analyze_nutrition_today)
-                await self._safe_reply(msg, result)
-            self._remember(str(user_id), "/macros", result)
+                clean_result = clean_markdown_to_plain_text(result)
+                chunks = _split_long_message(clean_result)
+                await self._safe_edit(placeholder, chunks[0], parse_mode=None)
+                for extra_chunk in chunks[1:]:
+                    await self._safe_reply(msg, extra_chunk, parse_mode=None)
+            self._remember(str(user_id), "/macros", clean_result)
         elif data == "btn_stats":
             stats = self.database.get_stats(self.settings.TELEGRAM_WORKOUT_CHAT_ID)
             stats_text = (
@@ -597,14 +679,14 @@ class GymTelegramBot:
         if not user_text:
             return
 
+        placeholder = await update.message.reply_text("Pensando...")
+
         async with _send_typing_action(update.message.chat):
-            # Decoupled background sync (0 ms latency for the user)
-            asyncio.create_task(self._background_sync_safe())
+            await self._sync_before_query()
 
             user_id = str(update.effective_user.id)
             active_memory = self.database.get_active_memory(user_id, limit=8)
 
-            placeholder = await update.message.reply_text("✍️ ...")
             full_text = ""
             last_edit_time = time.monotonic()
             edit_interval = 0.8  # Respect Telegram rate limits (~1 edit per second)
@@ -619,12 +701,14 @@ class GymTelegramBot:
                     if now - last_edit_time >= edit_interval and len(full_text) > 10:
                         try:
                             preview = full_text if len(full_text) < 3900 else (full_text[:3900] + "...")
-                            await placeholder.edit_text(preview + " ▌")
+                            clean_preview = clean_markdown_to_plain_text(preview)
+                            await placeholder.edit_text(clean_preview + " ▌")
                             last_edit_time = now
                         except Exception:
                             pass
 
-                final_text = full_text.strip() or "No se obtuvo respuesta del modelo."
+                raw_final = full_text.strip() or "No se obtuvo respuesta del modelo."
+                final_text = clean_markdown_to_plain_text(raw_final)
 
                 # Store in the active session
                 self.database.add_conversation_message(user_id, "user", user_text)
@@ -632,9 +716,9 @@ class GymTelegramBot:
 
                 # If it exceeds the max message size, edit the first and send the rest
                 chunks = _split_long_message(final_text)
-                await self._safe_edit(placeholder, chunks[0])
+                await self._safe_edit(placeholder, chunks[0], parse_mode=None)
                 for extra_chunk in chunks[1:]:
-                    await self._safe_reply(update.message, extra_chunk)
+                    await self._safe_reply(update.message, extra_chunk, parse_mode=None)
 
             except Exception as e:
                 logger.error("Error streaming with the model: %s", e)
@@ -647,9 +731,10 @@ class GymTelegramBot:
                     )
                 except Exception as ex:
                     fallback_resp = f"❌ Ocurrió un error al procesar tu consulta: {ex}"
+                clean_fallback = clean_markdown_to_plain_text(fallback_resp)
                 self.database.add_conversation_message(user_id, "user", user_text)
-                self.database.add_conversation_message(user_id, "model", fallback_resp)
-                await self._safe_edit(placeholder, fallback_resp)
+                self.database.add_conversation_message(user_id, "model", clean_fallback)
+                await self._safe_edit(placeholder, clean_fallback, parse_mode=None)
 
     async def _handle_voice_or_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Processes voice messages or audio files by transcribing and answering them."""
@@ -665,6 +750,8 @@ class GymTelegramBot:
             await message.reply_text("❌ El audio supera el límite de 20 MB permitido por Telegram.")
             return
 
+        placeholder = await message.reply_text("Pensando...")
+
         async with _send_typing_action(message.chat):
             try:
                 file_obj = await context.bot.get_file(voice_or_audio.file_id)
@@ -672,11 +759,13 @@ class GymTelegramBot:
                 audio_bytes = bytes(audio_bytearray)
             except Exception as e:
                 logger.error("Error downloading audio file: %s", e)
-                await message.reply_text("❌ No se pudo descargar el audio para su transcripción.")
+                await self._safe_edit(
+                    placeholder, "❌ No se pudo descargar el audio para su transcripción.", parse_mode=None
+                )
                 return
 
             if not audio_bytes:
-                await message.reply_text("⚠️ El archivo de audio descargado está vacío.")
+                await self._safe_edit(placeholder, "⚠️ El archivo de audio descargado está vacío.", parse_mode=None)
                 return
 
             mime_type = getattr(voice_or_audio, "mime_type", None) or ("audio/ogg" if message.voice else "audio/mpeg")
@@ -686,22 +775,21 @@ class GymTelegramBot:
                 transcription = await loop.run_in_executor(None, self.analyzer.transcribe_audio, audio_bytes, mime_type)
             except Exception as e:
                 logger.error("Error transcribing audio with the model: %s", e)
-                await message.reply_text(f"❌ Error al transcribir el audio: {str(e)}")
+                await self._safe_edit(placeholder, f"❌ Error al transcribir el audio: {str(e)}", parse_mode=None)
                 return
 
             transcription = (transcription or "").strip()
             if not transcription:
-                await message.reply_text("⚠️ No se detectó ninguna voz comprensible en el mensaje de audio.")
+                await self._safe_edit(
+                    placeholder, "⚠️ No se detectó ninguna voz comprensible en el mensaje de audio.", parse_mode=None
+                )
                 return
 
-            # Decoupled background sync (0 ms latency)
-            asyncio.create_task(self._background_sync_safe())
+            await self._sync_before_query()
 
             user_id = str(update.effective_user.id)
             active_memory = self.database.get_active_memory(user_id, limit=8)
 
-            # Analyze the transcribed query with incremental streaming (same as text)
-            placeholder = await message.reply_text("✍️ ...")
             full_text = ""
             last_edit_time = time.monotonic()
             edit_interval = 0.8  # Respect Telegram rate limits (~1 edit per second)
@@ -716,21 +804,23 @@ class GymTelegramBot:
                     if now - last_edit_time >= edit_interval and len(full_text) > 10:
                         try:
                             preview = full_text if len(full_text) < 3900 else (full_text[:3900] + "...")
-                            await placeholder.edit_text(preview + " ▌")
+                            clean_preview = clean_markdown_to_plain_text(preview)
+                            await placeholder.edit_text(clean_preview + " ▌")
                             last_edit_time = now
                         except Exception:
                             pass
 
-                final_text = full_text.strip() or "No se obtuvo respuesta del modelo."
+                raw_final = full_text.strip() or "No se obtuvo respuesta del modelo."
+                final_text = clean_markdown_to_plain_text(raw_final)
 
                 # Store in the session's persistent history
                 self.database.add_conversation_message(user_id, "user", transcription)
                 self.database.add_conversation_message(user_id, "model", final_text)
 
                 chunks = _split_long_message(final_text)
-                await self._safe_edit(placeholder, chunks[0])
+                await self._safe_edit(placeholder, chunks[0], parse_mode=None)
                 for extra_chunk in chunks[1:]:
-                    await self._safe_reply(message, extra_chunk)
+                    await self._safe_reply(message, extra_chunk, parse_mode=None)
 
             except Exception as e:
                 logger.error("Error streaming voice: %s", e)
@@ -742,9 +832,10 @@ class GymTelegramBot:
                     )
                 except Exception as ex:
                     response_text = f"❌ Ocurrió un error al procesar tu consulta: {ex}"
+                clean_response = clean_markdown_to_plain_text(response_text)
                 self.database.add_conversation_message(user_id, "user", transcription)
-                self.database.add_conversation_message(user_id, "model", response_text)
-                await self._safe_edit(placeholder, response_text)
+                self.database.add_conversation_message(user_id, "model", clean_response)
+                await self._safe_edit(placeholder, clean_response, parse_mode=None)
 
     async def _handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Processes user-sent photos and analyzes them with the model respecting context."""
@@ -755,22 +846,25 @@ class GymTelegramBot:
         if not message.photo:
             return
 
-        async with _send_typing_action(message.chat):
-            # Decoupled background sync (0 ms latency)
-            asyncio.create_task(self._background_sync_safe())
+        # Index -1 holds the highest resolution photo
+        photo_obj = message.photo[-1]
+        if photo_obj.file_size and photo_obj.file_size > MAX_ATTACHMENT_BYTES:
+            await message.reply_text("❌ La imagen supera el límite de 20 MB permitido por Telegram.")
+            return
 
-            # Index -1 holds the highest resolution photo
-            photo_obj = message.photo[-1]
-            if photo_obj.file_size and photo_obj.file_size > MAX_ATTACHMENT_BYTES:
-                await message.reply_text("❌ La imagen supera el límite de 20 MB permitido por Telegram.")
-                return
+        placeholder = await message.reply_text("Pensando...")
+
+        async with _send_typing_action(message.chat):
+            await self._sync_before_query()
             try:
                 file_obj = await context.bot.get_file(photo_obj.file_id)
                 img_bytearray = await file_obj.download_as_bytearray()
                 img_bytes = bytes(img_bytearray)
             except Exception as e:
                 logger.error("Error downloading photo from Telegram: %s", e)
-                await message.reply_text("❌ No se pudo descargar la imagen para su análisis.")
+                await self._safe_edit(
+                    placeholder, "❌ No se pudo descargar la imagen para su análisis.", parse_mode=None
+                )
                 return
 
             user_query = (message.caption or "").strip()
@@ -797,15 +891,14 @@ class GymTelegramBot:
                 logger.error("Error analyzing photo with the model: %s", e)
                 response_text = f"❌ Ocurrió un error al procesar tu imagen: {str(e)}"
 
+            clean_response = clean_markdown_to_plain_text(response_text)
             self.database.add_conversation_message(user_id, "user", f"[Imagen adjunta] {user_query}")
-            self.database.add_conversation_message(user_id, "model", response_text)
+            self.database.add_conversation_message(user_id, "model", clean_response)
 
-            chunks = _split_long_message(response_text)
-            for chunk in chunks:
-                try:
-                    await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    await message.reply_text(chunk)
+            chunks = _split_long_message(clean_response)
+            await self._safe_edit(placeholder, chunks[0], parse_mode=None)
+            for chunk in chunks[1:]:
+                await self._safe_reply(message, chunk, parse_mode=None)
 
     async def _handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Processes documents (PDF, TXT, CSV, images sent as uncompressed files, etc.)."""
@@ -821,9 +914,10 @@ class GymTelegramBot:
             await message.reply_text("❌ El archivo supera el límite de 20 MB permitido por Telegram.")
             return
 
+        placeholder = await message.reply_text("Pensando...")
+
         async with _send_typing_action(message.chat):
-            # Decoupled background sync (0 ms latency)
-            asyncio.create_task(self._background_sync_safe())
+            await self._sync_before_query()
 
             file_name = doc.file_name or "documento"
             mime_type = doc.mime_type
@@ -837,7 +931,9 @@ class GymTelegramBot:
                 doc_bytes = bytes(doc_bytearray)
             except Exception as e:
                 logger.error("Error downloading document from Telegram: %s", e)
-                await message.reply_text(f"❌ No se pudo descargar el archivo '{file_name}'.")
+                await self._safe_edit(
+                    placeholder, f"❌ No se pudo descargar el archivo '{file_name}'.", parse_mode=None
+                )
                 return
 
             user_query = (message.caption or "").strip()
@@ -864,15 +960,14 @@ class GymTelegramBot:
                 logger.error("Error analyzing document with the model: %s", e)
                 response_text = f"❌ Ocurrió un error al procesar el archivo '{file_name}': {str(e)}"
 
+            clean_response = clean_markdown_to_plain_text(response_text)
             self.database.add_conversation_message(user_id, "user", f"[Archivo: {file_name}] {user_query}")
-            self.database.add_conversation_message(user_id, "model", response_text)
+            self.database.add_conversation_message(user_id, "model", clean_response)
 
-            chunks = _split_long_message(response_text)
-            for chunk in chunks:
-                try:
-                    await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    await message.reply_text(chunk)
+            chunks = _split_long_message(clean_response)
+            await self._safe_edit(placeholder, chunks[0], parse_mode=None)
+            for chunk in chunks[1:]:
+                await self._safe_reply(message, chunk, parse_mode=None)
 
     async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Captures and logs unhandled exceptions or transient network failures."""

@@ -23,3 +23,8 @@ REGLAS CRÍTICAS DE INTERPRETACIÓN DE CARGAS EN [Sesiones]:
 1. Formato de números: En líneas como `Press banca: 32.5 12 10 8` o `Prensa: 60 16 12 12 12`, el PRIMER número (`32.5` o `60`) es SIEMPRE el peso en kg, y los números siguientes separados por espacio o coma son las repeticiones logradas en cada serie efectiva.
 2. Pesos en barras y máquinas: NUNCA se incluye el peso de la barra ni del carro de la máquina en el número anotado; el número representa únicamente el peso agregado en discos/placas.
 3. Pesos en mancuernas: En ejercicios con mancuernas (ej. Curl bíceps, Elevaciones laterales, Remo individual), el peso anotado corresponde a UNA sola mancuerna (por lado). Si en algún registro antiguo aparece `12 + 12`, significa 12 kg por cada mano (mancuerna de 12 kg), NO 24 kg por mano.
+
+REGLAS CRÍTICAS DE FORMATO Y PRESENTACIÓN DE RESPUESTAS:
+1. Texto plano estricto: los mensajes no usan Markdown. Prohibido usar asteriscos (**negrita** o *cursiva*), almohadillas (## o ### encabezados) o backticks.
+2. Resaltar secciones: para dar jerarquía a las diferentes secciones que quieras destacar, escribe el encabezado EN MAYÚSCULAS seguido de dos puntos (ejemplo: RECOMENDACIÓN:, CALORÍAS Y MACROS:, PRÓXIMA SESIÓN:, DESAYUNO:).
+3. Viñetas: no uses viñetas excesivas ni listas largas. Prefiere párrafos directos y fluidos separados por saltos de línea. Usa guiones simples (-) con moderación sólo cuando sea indispensable.

@@ -159,8 +159,11 @@ class TelegramWorkoutReader:
                         continue
 
                     # Logical group name (per GROUP_CHAT_MAP) or, if not mapped, the real Telegram title.
-                    chat_title = self._chat_id_to_group.get(str(current_chat_id)) or (
-                        getattr(entity, "title", None) or getattr(entity, "username", None) or ""
+                    real_title = getattr(entity, "title", None) or getattr(entity, "username", None) or ""
+                    chat_title = (
+                        self._chat_id_to_group.get(str(current_chat_id))
+                        or self._chat_id_to_group.get(real_title)
+                        or real_title
                     )
                     min_id = 0 if force_all else self.database.get_last_synced_id(current_chat_id)
                     logger.info(
@@ -171,39 +174,39 @@ class TelegramWorkoutReader:
                         force_all,
                     )
 
-                    raw_messages_to_save: list[RawMessage] = []
+                    messages_by_id: dict[int, Message] = {}
                     max_seen_id = min_id
 
                     try:
-                        async for msg in client.iter_messages(
-                            entity,
-                            min_id=min_id,
-                            reverse=True,
-                        ):
-                            if not isinstance(msg, Message):
-                                continue
+                        if force_all or min_id == 0:
+                            async for msg in client.iter_messages(
+                                entity,
+                                min_id=0,
+                                reverse=True,
+                            ):
+                                if isinstance(msg, Message):
+                                    messages_by_id[msg.id] = msg
+                        else:
+                            # 1. Fetch recent messages window (100 messages) to detect any edits made to existing messages
+                            recent_window = 100
+                            async for msg in client.iter_messages(
+                                entity,
+                                limit=recent_window,
+                            ):
+                                if isinstance(msg, Message):
+                                    messages_by_id[msg.id] = msg
 
-                            text_content = (msg.message or msg.raw_text or "").strip()
-                            if not text_content:
-                                continue
-
-                            msg_date = msg.date
-                            edit_date = msg.edit_date
-                            media_type = msg.media.__class__.__name__ if msg.media else None
-
-                            raw_msg = RawMessage(
-                                id=msg.id,
-                                chat_id=str(current_chat_id),
-                                chat_title=chat_title,
-                                date=msg_date,
-                                text=text_content,
-                                edit_date=edit_date,
-                                media_type=media_type,
-                                created_at=datetime.now(UTC),
-                            )
-                            raw_messages_to_save.append(raw_msg)
-                            if msg.id > max_seen_id:
-                                max_seen_id = msg.id
+                            # 2. If there are new messages older than the recent window but newer than min_id, fetch them
+                            if messages_by_id:
+                                oldest_fetched_id = min(messages_by_id.keys())
+                                if oldest_fetched_id > min_id:
+                                    async for msg in client.iter_messages(
+                                        entity,
+                                        min_id=min_id,
+                                        max_id=oldest_fetched_id,
+                                    ):
+                                        if isinstance(msg, Message):
+                                            messages_by_id[msg.id] = msg
 
                     except FloodWaitError as e:
                         logger.error("Telegram rate-limit detected (FloodWait: %d seconds)", e.seconds)
@@ -212,9 +215,42 @@ class TelegramWorkoutReader:
                         logger.error("MTProto error while iterating messages of '%s': %s", current_chat_id, e)
                         raise
 
-                    synced_count = self.database.upsert_messages(raw_messages_to_save)
+                    raw_messages_to_check: list[RawMessage] = []
+                    for msg in messages_by_id.values():
+                        text_content = (msg.message or msg.raw_text or "").strip()
+                        if not text_content:
+                            continue
+
+                        raw_msg = RawMessage(
+                            id=msg.id,
+                            chat_id=str(current_chat_id),
+                            chat_title=chat_title,
+                            date=msg.date,
+                            text=text_content,
+                            edit_date=msg.edit_date,
+                            media_type=msg.media.__class__.__name__ if msg.media else None,
+                            created_at=datetime.now(UTC),
+                        )
+                        raw_messages_to_check.append(raw_msg)
+                        if msg.id > max_seen_id:
+                            max_seen_id = msg.id
+
+                    to_save, new_count, edited_count = self.database.filter_new_and_edited_messages(
+                        current_chat_id,
+                        raw_messages_to_check,
+                    )
+
+                    if to_save:
+                        self.database.upsert_messages(to_save)
+                        logger.info(
+                            "Chat '%s': %d new messages, %d edited messages updated.",
+                            current_chat_id,
+                            new_count,
+                            edited_count,
+                        )
+
                     self.database.update_sync_metadata(current_chat_id, max_seen_id)
-                    total_synced_now += synced_count
+                    total_synced_now += new_count + edited_count
 
         stats = self.database.get_stats()
         self._last_sync_timestamp = time.monotonic()

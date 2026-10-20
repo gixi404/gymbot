@@ -211,6 +211,54 @@ class GymDatabase:
 
         return len(messages)
 
+    def filter_new_and_edited_messages(
+        self,
+        chat_id: str | int,
+        messages: list[RawMessage],
+    ) -> tuple[list[RawMessage], int, int]:
+        """Compares fetched messages against stored messages in SQLite.
+
+        Returns:
+            Tuple of (messages_to_save, new_count, edited_count)
+            where messages_to_save contains only messages that are newly
+            inserted or have different text or edit_date.
+        """
+        if not messages:
+            return [], 0, 0
+
+        cid = str(chat_id)
+        msg_ids = [m.id for m in messages]
+
+        # SQLite handles parameters safely in chunks of 500
+        existing: dict[int, tuple[str, str | None]] = {}
+        with self.get_connection() as conn:
+            chunk_size = 500
+            for i in range(0, len(msg_ids), chunk_size):
+                chunk = msg_ids[i : i + chunk_size]
+                placeholders = ",".join("?" * len(chunk))
+                query = f"SELECT id, text, edit_date FROM raw_messages WHERE chat_id = ? AND id IN ({placeholders});"
+                cursor = conn.execute(query, [cid, *chunk])
+                for row in cursor.fetchall():
+                    existing[int(row["id"])] = (row["text"] or "", row["edit_date"])
+
+        to_save: list[RawMessage] = []
+        new_count = 0
+        edited_count = 0
+
+        for m in messages:
+            m_text = m.text or ""
+            m_edit_str = m.edit_date.isoformat() if m.edit_date else None
+            if m.id not in existing:
+                to_save.append(m)
+                new_count += 1
+            else:
+                db_text, db_edit_date = existing[m.id]
+                if m_text != db_text or (m_edit_str and m_edit_str != db_edit_date):
+                    to_save.append(m)
+                    edited_count += 1
+
+        return to_save, new_count, edited_count
+
     def get_last_synced_id(self, channel_id: str | int) -> int:
         """Gets the ID of the last synchronized message for the chat."""
         cid = str(channel_id)

@@ -59,6 +59,50 @@ class TestGymDatabase(unittest.TestCase):
         self.assertEqual(stored_after[0].text, "Banca: 85kg 3x8 (corregido)")
         self.assertIsNotNone(stored_after[0].edit_date)
 
+    def test_filter_new_and_edited_messages(self):
+        now = datetime(2026, 10, 10, 8, 0, 0)
+        chat_id = "-100123"
+
+        msg1 = RawMessage(id=10, chat_id=chat_id, date=now, text="10/10/26 Desayuno: bowl de 20g de cereales")
+        msg2 = RawMessage(id=11, chat_id=chat_id, date=now + timedelta(hours=1), text="Entrenamiento de fuerza")
+
+        # Step 1: Initial check with empty DB: both are detected as new
+        to_save, new_count, edited_count = self.db.filter_new_and_edited_messages(chat_id, [msg1, msg2])
+        self.assertEqual(len(to_save), 2)
+        self.assertEqual(new_count, 2)
+        self.assertEqual(edited_count, 0)
+
+        # Save them
+        self.db.upsert_messages(to_save)
+
+        # Step 2: Unchanged messages: should return empty list
+        to_save, new_count, edited_count = self.db.filter_new_and_edited_messages(chat_id, [msg1, msg2])
+        self.assertEqual(len(to_save), 0)
+        self.assertEqual(new_count, 0)
+        self.assertEqual(edited_count, 0)
+
+        # Step 3: Message 10 is edited at lunch
+        msg1_edited = RawMessage(
+            id=10,
+            chat_id=chat_id,
+            date=now,
+            text="10/10/26 Desayuno: bowl de 20g de cereales Almuerzo: 50g de patatas",
+            edit_date=now + timedelta(hours=4),
+        )
+        to_save, new_count, edited_count = self.db.filter_new_and_edited_messages(chat_id, [msg1_edited, msg2])
+        self.assertEqual(len(to_save), 1)
+        self.assertEqual(new_count, 0)
+        self.assertEqual(edited_count, 1)
+        self.assertEqual(to_save[0].id, 10)
+        self.assertIn("Almuerzo: 50g de patatas", to_save[0].text)
+
+        # Upsert the edited message
+        self.db.upsert_messages(to_save)
+        stored = self.db.get_messages(chat_ids=[chat_id])
+        msg1_stored = next(m for m in stored if m.id == 10)
+        self.assertIn("Almuerzo: 50g de patatas", msg1_stored.text)
+        self.assertIsNotNone(msg1_stored.edit_date)
+
     def test_sync_metadata_tracking(self):
         channel_id = "-1001234567890"
         self.assertEqual(self.db.get_last_synced_id(channel_id), 0)

@@ -20,8 +20,11 @@ logger = logging.getLogger(__name__)
 # Records and scheduled tasks are interpreted in the athlete's timezone.
 ATLETA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
-# Explicit date written inside the text (dd/mm/yy, dd/mm/yyyy or dd-mm...).
-_TEXT_DATE_RE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b")
+# Explicit date written inside the text (dd/mm/yy, dd/mm/yyyy or dd-mm... at start of line/entry).
+_TEXT_DATE_RE = re.compile(
+    r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b"
+    r"|(?:^|\n)\s*(\d{1,2})[/-](\d{1,2})\s*[:\-\n]"
+)
 # (date, weight kg) pair inside PesoCorporal messages.
 _PESO_RE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b[^\d]*?([0-9]+(?:[.,][0-9]+)?)\s*kg", re.IGNORECASE)
 
@@ -29,13 +32,85 @@ FITNESS_COACH_SYSTEM_INSTRUCTION = """
 Eres el Entrenador de Fuerza y Nutricionista Deportivo de GymBot.
 
 DIRECTIVAS ESENCIALES:
-1. Profundidad proporcional a la consulta:
+1. Formato de Salida (TEXTO PLANO ESTRICTO):
+   - Todos los mensajes son texto plano, NO tienen formato Markdown.
+   - NUNCA uses formato Markdown: PROHIBIDO usar asteriscos (**negrita** o *cursiva*), almohadillas (## o ### encabezados), barras invertidas o backticks.
+   - NO uses viñetas excesivas ni anidadas. Evita saturar el texto con listas largas de viñetas en cada línea; redacta párrafos limpios, directos y fluidos separados por saltos de línea. Usa guiones simples (-) con moderación sólo cuando sea indispensable enumerar elementos puntuales.
+   - Para resaltar o estructurar diferentes secciones del mensaje, escribe el encabezado de la sección EN MAYÚSCULAS seguido de dos puntos (por ejemplo: RECOMENDACIÓN:, RESUMEN:, CALORÍAS Y MACROS:, PRÓXIMA SESIÓN:, DESAYUNO:, ALMUERZO:, EVALUACIÓN:). Esto es suficiente para dar jerarquía visual.
+2. Profundidad proporcional a la consulta:
    - Ante preguntas simples o puntuales (ej. un dato de una sesión, qué entrené tal día, un pesaje puntual), responde de forma directa y concisa en 1 a 3 oraciones sin rodeos.
-   - Ante preguntas de análisis, progreso, estancamientos, comparativas de meses, estimación de músculo vs. grasa, macros detallados o revisión de los 4 grupos, explayate lo necesario con un análisis técnico estructurado (usando viñetas limpias, métricas concretas, deltas de cargas/repeticiones y conclusiones claras). No recortes información valiosa en consultas complejas ni escribas párrafos de relleno en consultas simples.
-2. Tono: Español directo, técnico y natural. Sin saludos, sin despedidas, sin emojis y sin frases hechas de cortesía.
-3. Fidelidad a los Registros y Fechas: Basa tus afirmaciones estrictamente en los registros provistos ([Sesiones], [Cardio], [Comidas], [PesoCorporal]). Respeta rigurosamente la jerarquía de fechas: si el texto del mensaje contiene una fecha escrita adentro, esa es la fecha real del evento; si solo dice el día de la semana o no tiene fecha en el texto, usa la fecha de `[enviado: dd/mm/yyyy]`.
-4. Estimación Nutricional Activa: En consultas sobre [Comidas], calcula y estima siempre las calorías y macronutrientes (proteínas, carbohidratos, grasas) usando valores nutricionales estándar (porciones argentinas/rioplatenses comunes) para los alimentos anotados. Evalúa siempre la ingesta contra las metas del atleta: 2800-3000 kcal, proteína mínima indispensable (112 g) y proteína óptima (126-155 g).
+   - Ante preguntas de análisis, progreso, estancamientos, comparativas de meses, estimación de músculo vs. grasa, macros detallados o revisión de los 4 grupos, explayate lo necesario con un análisis técnico estructurado (usando métricas concretas, deltas de cargas/repeticiones, encabezados EN MAYÚSCULAS y conclusiones claras). No recortes información valiosa en consultas complejas ni escribas párrafos de relleno en consultas simples.
+3. Tono: Español directo, técnico y natural. Sin saludos, sin despedidas, sin emojis y sin frases hechas de cortesía.
+4. Fidelidad a los Registros y Fechas: Basa tus afirmaciones estrictamente en los registros provistos ([Sesiones], [Cardio], [Comidas], [PesoCorporal]). Respeta rigurosamente la jerarquía de fechas: si el texto del mensaje contiene una fecha escrita adentro, esa es la fecha real del evento; si solo dice el día de la semana o no tiene fecha en el texto, usa la fecha de [enviado: dd/mm/yyyy].
+5. Estimación Nutricional Activa: En consultas sobre [Comidas], calcula y estima siempre las calorías y macronutrientes (proteínas, carbohidratos, grasas) usando valores nutricionales estándar (porciones argentinas/rioplatenses comunes) para los alimentos anotados. Evalúa siempre la ingesta contra las metas del atleta: 2800-3000 kcal, proteína mínima indispensable (112 g) y proteína óptima (126-155 g).
 """
+
+
+def clean_markdown_to_plain_text(text: str) -> str:
+    """Converts markdown formatting artifacts to clean plain text.
+
+    - Replaces headings (## Header) with uppercase headers (HEADER).
+    - Converts bold labels (**Header:** or **Header**) to uppercase.
+    - Strips leftover asterisks, hashes, backticks, and markdown underscores.
+    - Replaces asterisk bullets (* item) with clean dashes (- item).
+    - Preserves readability without markdown syntax artifacts.
+    """
+    if not text:
+        return ""
+
+    lines = text.split("\n")
+    cleaned_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Markdown headings: '# Title', '## Title', '### Title'
+        heading_match = re.match(r"^#{1,6}\s+(.*)$", stripped)
+        if heading_match:
+            heading_content = heading_match.group(1).strip()
+            heading_content = re.sub(r"^\*\*(.*?)\*\*$", r"\1", heading_content)
+            cleaned_lines.append(heading_content.upper())
+            continue
+
+        # Convert bold section headers (optionally preceded by bullets like '-' or '1.'): '**Section:**' -> 'SECTION:'
+        def _upper_bold_header(m: re.Match) -> str:
+            prefix = m.group(1) or ""
+            content = m.group(2).strip()
+            return f"{prefix}{content.upper()}:"
+
+        line = re.sub(r"^(\s*(?:[-*]|\d+\.)?\s*)\*\*(.*?)\*\*\s*:", _upper_bold_header, line)
+
+        # Standalone bold line: '**Section**' -> 'SECTION'
+        if re.match(r"^\s*\*\*[^*]+\*\*\s*$", line):
+            bold_content = re.sub(r"^\s*\*\*(.*?)\*\*\s*$", r"\1", line).strip()
+            cleaned_lines.append(bold_content.upper())
+            continue
+
+        # Inline bold labels like '**Recomendación**' -> 'RECOMENDACIÓN'
+        def _replace_bold(m: re.Match) -> str:
+            content = m.group(1).strip()
+            if len(content) <= 35 and not any(p in content for p in (".", ";", "\n")):
+                return content.upper()
+            return content
+
+        line = re.sub(r"\*\*(.*?)\*\*", _replace_bold, line)
+        line = re.sub(r"__(.*?)__", _replace_bold, line)
+
+        # Replace leading asterisk bullet "* item" with "- item"
+        line = re.sub(r"^(\s*)\*\s+", r"\1- ", line)
+
+        # Remove backticks
+        line = line.replace("`", "")
+
+        # Remove markdown italic asterisks around single words like *palabra* -> palabra
+        line = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", line)
+
+        # Remove any leftover unpaired double asterisks
+        line = line.replace("**", "")
+
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines)
 
 
 class GymAnalyzer:
@@ -55,6 +130,12 @@ class GymAnalyzer:
         self._cached_context: str | None = None
         self._cached_total_messages: int = -1
         self._cached_last_sync: datetime | None = None
+
+    def invalidate_cache(self) -> None:
+        """Clears cached context in RAM so next query reads fresh database state."""
+        self._cached_context = None
+        self._cached_total_messages = -1
+        self._cached_last_sync = None
 
     @staticmethod
     def _now() -> datetime:
@@ -282,12 +363,13 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         prompt = self._build_prompt(question_clean, route, conversation_history)
 
         try:
-            return self.llm_client.generate_response(
+            raw_response = self.llm_client.generate_response(
                 prompt=prompt,
                 system_instruction=self.get_system_instruction(),
                 attachments=attachments,
                 route=route,
             )
+            return clean_markdown_to_plain_text(raw_response)
         except Exception as e:
             logger.error("Error processing query with the AI engine: %s", e)
             return f"❌ Error al consultar el motor de IA: {e}"
@@ -400,8 +482,10 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         """Real event date: prioritizes the date written in the text over the send date."""
         match = _TEXT_DATE_RE.search(msg.text)
         if match:
-            day, month = int(match.group(1)), int(match.group(2))
-            year = match.group(3)
+            if match.group(1):
+                day, month, year = int(match.group(1)), int(match.group(2)), match.group(3)
+            else:
+                day, month, year = int(match.group(4)), int(match.group(5)), None
             if year:
                 y = int(year)
                 y = 2000 + y if y < 100 else y
@@ -419,12 +503,13 @@ INSTRUCCIÓN: Responde a la consulta del atleta aplicando tus reglas de estilo y
         date_label = target_day.strftime("%d/%m/%Y")
 
         # Full day in the athlete's timezone, converted to UTC to compare against SQLite.
+        # Window starts 1 day prior to catch late-night logs from the eve, and ends 2 days
+        # after to cover delayed records.
         start_utc = datetime(target_day.year, target_day.month, target_day.day, tzinfo=ATLETA_TZ).astimezone(UTC)
-        end_utc = start_utc + timedelta(days=1)
-        # Extended window (+2 days) to avoid losing delayed records.
-        window_end = end_utc + timedelta(days=2)
+        window_start = start_utc - timedelta(days=1)
+        window_end = start_utc + timedelta(days=3)
 
-        day_messages = self.database.get_messages(since=start_utc, until=window_end, reverse=False)
+        day_messages = self.database.get_messages(since=window_start, until=window_end, reverse=False)
         food_messages = [
             m
             for m in day_messages
@@ -457,13 +542,14 @@ Luego entrega:
 1. Estimación calórica total aproximada (kcal).
 2. Macronutrientes aproximados: Proteínas (g), Carbohidratos (g), Grasas (g).
 3. Evaluación breve (2-3 oraciones) contrastando la ingesta con las metas del atleta: 2800-3000 kcal/día, proteína mínima 112 g y proteína óptima 126-155 g. Menciona puntos fuertes y áreas a mejorar si las hubiera.
-Formato conciso, limpio y profesional. Usa las proporciones y pesos mencionados en los registros; si no están exactos, estima con valores estándar para porciones comunes (rioplatenses).
+Formato conciso, limpio y profesional en TEXTO PLANO. NO uses Markdown (nada de asteriscos ** ni almohadillas ##; usa encabezados EN MAYÚSCULAS como CALORÍAS Y MACROS:, EVALUACIÓN:). Usa las proporciones y pesos mencionados en los registros; si no están exactos, estima con valores estándar para porciones comunes (rioplatenses).
 """
         try:
-            return self.llm_client.generate_response(
+            raw_response = self.llm_client.generate_response(
                 prompt=prompt,
                 system_instruction=self.get_system_instruction(),
             )
+            return clean_markdown_to_plain_text(raw_response)
         except Exception as e:
             logger.error("Error analyzing nutrition with the AI engine: %s", e)
             return f"❌ Error al estimar nutrición: {e}"
@@ -496,13 +582,14 @@ Aplica la regla de DOBLE PROGRESIÓN del atleta con técnica estricta y rango co
 2. El esquema actual del atleta son 3 SERIES EFECTIVAS por ejercicio, con un rango general de 8 a 13 repeticiones según el ejercicio (en registros antiguos puede aparecer 4 series: usa el estándar actual de 3).
 3. Si el atleta alcanzó 13 (o el tope del rango) repeticiones en las 3 series efectivas, indica el incremento de carga sugerido (ej. +1 a 2.5 kg) y las repeticiones base para la próxima sesión.
 4. Si no alcanzó el tope del rango, recomienda mantener el mismo peso y buscar añadir 1-2 repeticiones totales hasta llegar a 13.
-Responde de forma concisa y directa en 1 a 3 oraciones completas y motivantes.
+Responde de forma concisa y directa en 1 a 3 oraciones completas en TEXTO PLANO sin markdown (sin **, sin ##; usa MAYÚSCULAS para resaltar).
 """
         try:
-            return self.llm_client.generate_response(
+            raw_response = self.llm_client.generate_response(
                 prompt=prompt,
                 system_instruction=self.get_system_instruction(),
             )
+            return clean_markdown_to_plain_text(raw_response)
         except Exception as e:
             logger.error("Error suggesting progression with Gemini: %s", e)
             return f"❌ Error al consultar la sugerencia de progresión: {e}"
@@ -531,14 +618,15 @@ Elabora el RESUMEN SEMANAL EJECUTIVO para el atleta:
 2. Mejores levantamientos o récords de sobrecarga progresiva alcanzados esta semana.
 3. Tendencia o promedio del peso corporal usando la curva de PesoCorporal disponible.
 4. Cumplimiento nutricional si hubo notas en comidas.
-Estructura la respuesta de manera clara, concisa y profesional (3 a 5 párrafos cortos con viñetas limpias), sin saludos, sin despedidas y sin emojis en exceso.
+Estructura la respuesta de manera clara, concisa y profesional en TEXTO PLANO (párrafos directos sin viñetas excesivas, sin markdown, sin **, sin ##; usa encabezados EN MAYÚSCULAS para cada sección), sin saludos, sin despedidas y sin emojis en exceso.
 """
         try:
-            return self.llm_client.generate_response(
+            raw_response = self.llm_client.generate_response(
                 prompt=prompt,
                 system_instruction=self.get_system_instruction(),
                 route=QueryRoute(complexity="complex", groups=groups, days_lookback=7),
             )
+            return clean_markdown_to_plain_text(raw_response)
         except Exception as e:
             logger.error("Error generating weekly summary with Gemini: %s", e)
             return f"❌ Error al generar resumen semanal: {e}"
