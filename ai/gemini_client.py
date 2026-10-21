@@ -92,9 +92,9 @@ class GeminiClient:
                         contents=request_contents,
                         config=config,
                     )
-                    if response and response.text:
+                    if response and response.text and response.text.strip():
                         return response.text.strip()
-                    return "No se obtuvo respuesta de texto del modelo."
+                    logger.warning("Gemini model '%s' returned empty text. Trying the next model...", current_model)
 
                 except APIError as e:
                     last_error = e

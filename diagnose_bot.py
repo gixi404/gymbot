@@ -57,7 +57,9 @@ def main() -> None:
         verdict = "OK" if (not expected or expected <= got) else "MISMATCH"
         ok += verdict == "OK"
         print(f"[{verdict}] {query}")
-        print(f"    complexity={route.complexity}  groups={route.groups}  days_lookback={route.days_lookback}  ({dt:.0f} ms)")
+        print(
+            f"    complexity={route.complexity}  groups={route.groups}  days_lookback={route.days_lookback}  ({dt:.0f} ms)"
+        )
         if expected:
             print(f"    esperado~ {sorted(expected)}  |  filtros SQL: {titles}")
 

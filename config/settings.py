@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # Groq model for simple queries (avoids Gemini congestion).
     GROQ_LIGHT_MODEL: str = "qwen/qwen3.8-27b"
     GROQ_AUDIO_MODEL: str = "whisper-large-v3"
-    GROQ_MAX_OUTPUT_TOKENS: int = 1024
+    GROQ_MAX_OUTPUT_TOKENS: int = 2048
     # Empty by default: if the light model fails, it jumps straight to DeepSeek.
     # Add IDs here only if you want to retry with other Groq models first.
     GROQ_FALLBACK_MODELS: list[str] = []
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
     # "deepseek-chat" was deprecated in the official API; "deepseek-reasoner" adds reasoning.
     DEEPSEEK_MODEL: str = "deepseek-flash"
-    DEEPSEEK_MAX_OUTPUT_TOKENS: int = 2048
+    DEEPSEEK_MAX_OUTPUT_TOKENS: int = 4096
 
     # 3c. Query router (Level 1) and execution routing (Level 3)
     # Estimated token threshold above which a "simple" query leaves Groq

@@ -174,7 +174,10 @@ class GroqClient:
                     max_tokens=self.settings.GROQ_MAX_OUTPUT_TOKENS,
                 )
                 text = (response.choices[0].message.content or "").strip()
-                return strip_think_blocks(text).strip() or "No se obtuvo respuesta de texto del modelo."
+                cleaned = strip_think_blocks(text).strip()
+                if not cleaned:
+                    raise RuntimeError(f"Groq model '{model}' produced only reasoning blocks without visible text.")
+                return cleaned
             except (RateLimitError, APIStatusError, APIConnectionError) as e:
                 last_error = e
                 if isinstance(e, RateLimitError):
@@ -207,11 +210,10 @@ class GroqClient:
         """Asynchronous streaming with `` filter and immediate fallback across Groq models."""
         messages = self._messages(prompt, system_instruction)
         last_error: Exception | None = None
-        yielded_any = False
-        yielded_visible = False
-        think_filter = ThinkFilter()
 
         for model in self._candidate_models(models):
+            think_filter = ThinkFilter()
+            yielded_visible = False
             try:
                 stream = await self.async_client.chat.completions.create(
                     model=model,
@@ -222,7 +224,6 @@ class GroqClient:
                 )
                 async for chunk in stream:
                     if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                        yielded_any = True
                         visible = think_filter.feed(chunk.choices[0].delta.content)
                         if visible:
                             yielded_visible = True
@@ -236,11 +237,11 @@ class GroqClient:
                 if not yielded_visible:
                     # The whole stream was empty internal reasoning.
                     logger.warning("Groq model '%s' returned only <think> blocks.", model)
-                    yield "No pude generar una respuesta concreta. Intenta reformular la pregunta."
+                    raise RuntimeError(f"Groq model '{model}' produced only reasoning blocks without visible text.")
                 return
             except (RateLimitError, APIStatusError, APIConnectionError) as e:
                 last_error = e
-                if yielded_any:
+                if yielded_visible:
                     logger.error("Intermediate error in Groq stream '%s' after emitting tokens: %s", model, e)
                     return
                 if isinstance(e, RateLimitError):
@@ -248,7 +249,7 @@ class GroqClient:
                 logger.warning("Groq stream '%s' failed (%s). Trying the next one...", model, e)
             except Exception as e:  # noqa: BLE001
                 last_error = e
-                if yielded_any:
+                if yielded_visible:
                     logger.error("Intermediate exception in Groq stream '%s' after emitting tokens: %s", model, e)
                     return
                 logger.warning("Unexpected exception in Groq stream '%s': %s. Trying the next one...", model, e)
@@ -289,7 +290,9 @@ class DeepSeekClient:
                 max_tokens=self.max_output_tokens,
             )
             text = strip_think_blocks(response.choices[0].message.content or "").strip()
-            return text or "No se obtuvo respuesta de texto del modelo."
+            if not text:
+                raise RuntimeError(f"DeepSeek '{self.model_name}' produced only reasoning blocks without visible text.")
+            return text
         except (RateLimitError, APIStatusError, APIConnectionError) as e:
             raise RuntimeError(f"DeepSeek '{self.model_name}' failed: {e}") from e
 
@@ -321,7 +324,7 @@ class DeepSeekClient:
 
         if not yielded_visible:
             logger.warning("DeepSeek '%s' returned only <think> blocks.", self.model_name)
-            yield "No pude generar una respuesta concreta. Intenta reformular la pregunta."
+            raise RuntimeError(f"DeepSeek '{self.model_name}' produced only reasoning blocks without visible text.")
 
 
 class LLMClient:
