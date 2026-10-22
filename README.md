@@ -3,7 +3,7 @@
 Un sistema completo, modular, robusto y **100% gratuito ($0)** diseñado para registrar, sincronizar y analizar entrenamientos de gimnasio a partir de un chat privado de Telegram, utilizando **MTProto en solo lectura pasiva**, persistencia local en **SQLite (WAL)** y una **arquitectura de IA híbrida de 3 niveles** (clasificador en Groq → contexto mínimo en SQLite → ejecución en Qwen/DeepSeek) que evita la congestión de Gemini y reduce el consumo de tokens.
 
 ---
-
+..
 ## 🎯 Características Principales
 
 1. **Lectura Pasiva 100% Limpia (Zero-Noise)**:
