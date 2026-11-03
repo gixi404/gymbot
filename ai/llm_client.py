@@ -266,6 +266,7 @@ class DeepSeekClient:
         self.base_url = settings.DEEPSEEK_BASE_URL
         self.model_name = settings.DEEPSEEK_MODEL
         self.max_output_tokens = settings.DEEPSEEK_MAX_OUTPUT_TOKENS
+        self.reasoning_effort = getattr(settings, "DEEPSEEK_REASONING_EFFORT", "low")
 
         if not self.api_key:
             raise ValueError("DEEPSEEK_API_KEY is not set in the environment variables (.env).")
@@ -280,15 +281,47 @@ class DeepSeekClient:
             {"role": "user", "content": prompt},
         ]
 
-    def generate_response(self, prompt: str, system_instruction: str, temperature: float = 0.2) -> str:
-        """Generate text by removing the `` blocks of explicit reasoning."""
+    def _call_completion(self, messages: list[dict], temperature: float):
+        params: dict = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": self.max_output_tokens,
+        }
+        if self.reasoning_effort:
+            params["reasoning_effort"] = self.reasoning_effort
         try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=self._messages(prompt, system_instruction),
-                temperature=temperature,
-                max_tokens=self.max_output_tokens,
-            )
+            return self.client.chat.completions.create(**params)
+        except Exception as e:
+            if self.reasoning_effort and "reasoning_effort" in str(e).lower():
+                logger.warning("DeepSeek model rejected reasoning_effort (%s). Retrying without it...", e)
+                params.pop("reasoning_effort", None)
+                return self.client.chat.completions.create(**params)
+            raise
+
+    async def _call_completion_stream_async(self, messages: list[dict], temperature: float):
+        params: dict = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": self.max_output_tokens,
+            "stream": True,
+        }
+        if self.reasoning_effort:
+            params["reasoning_effort"] = self.reasoning_effort
+        try:
+            return await self.async_client.chat.completions.create(**params)
+        except Exception as e:
+            if self.reasoning_effort and "reasoning_effort" in str(e).lower():
+                logger.warning("DeepSeek stream rejected reasoning_effort (%s). Retrying without it...", e)
+                params.pop("reasoning_effort", None)
+                return await self.async_client.chat.completions.create(**params)
+            raise
+
+    def generate_response(self, prompt: str, system_instruction: str, temperature: float = 0.2) -> str:
+        """Generate text by removing the <think> blocks of explicit reasoning."""
+        try:
+            response = self._call_completion(self._messages(prompt, system_instruction), temperature)
             text = strip_think_blocks(response.choices[0].message.content or "").strip()
             if not text:
                 raise RuntimeError(f"DeepSeek '{self.model_name}' produced only reasoning blocks without visible text.")
@@ -299,14 +332,8 @@ class DeepSeekClient:
     async def generate_response_stream_async(
         self, prompt: str, system_instruction: str, temperature: float = 0.2
     ) -> AsyncGenerator[str, None]:
-        """Asynchronous streaming with `` filter in real time."""
-        stream = await self.async_client.chat.completions.create(
-            model=self.model_name,
-            messages=self._messages(prompt, system_instruction),
-            temperature=temperature,
-            max_tokens=self.max_output_tokens,
-            stream=True,
-        )
+        """Asynchronous streaming with <think> filter in real time."""
+        stream = await self._call_completion_stream_async(self._messages(prompt, system_instruction), temperature)
         think_filter = ThinkFilter()
         yielded_visible = False
 
@@ -429,18 +456,27 @@ class LLMClient:
         route: QueryRoute | None = None,
     ) -> str:
         """Text → light Groq/DeepSeek; attachments (vision) → Gemini as fallback."""
+        engines_tried: set[str] = set()
         if not attachments and (self.groq or self.deepseek):
             for engine in self._engine_order(prompt, system_instruction, route):
+                engines_tried.add(engine)
                 try:
                     return self._sync_call(engine, prompt, system_instruction, temperature)
                 except Exception as e:  # noqa: BLE001 - degrades to the next engine
                     logger.warning("Engine '%s' failed (%s). Trying the next engine...", engine, e)
-        return self.gemini.generate_response(
-            prompt=prompt,
-            system_instruction=system_instruction,
-            attachments=attachments,
-            temperature=temperature,
-        )
+        try:
+            return self.gemini.generate_response(
+                prompt=prompt,
+                system_instruction=system_instruction,
+                attachments=attachments,
+                temperature=temperature,
+            )
+        except Exception as e:
+            logger.warning("Gemini failed (%s).", e)
+            if not attachments and self.groq and "light" not in engines_tried:
+                logger.info("Attempting fallback to light Groq engine after Gemini failure...")
+                return self.groq.generate_response(prompt, system_instruction, temperature, models=self.light_models)
+            raise
 
     def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
         """Audio → Whisper (Groq); failure → Gemini."""
@@ -460,9 +496,11 @@ class LLMClient:
         route: QueryRoute | None = None,
     ) -> AsyncGenerator[str, None]:
         """Streaming: text → light Groq/DeepSeek; attachments or total failure → Gemini."""
+        engines_tried: set[str] = set()
         if not attachments and (self.groq or self.deepseek):
             yielded_any = False
             for engine in self._engine_order(prompt, system_instruction, route):
+                engines_tried.add(engine)
                 try:
                     async for chunk in self._stream_call(engine, prompt, system_instruction, temperature):
                         yielded_any = True
@@ -474,10 +512,26 @@ class LLMClient:
                         return
                     logger.warning("Engine '%s' stream failed (%s). Trying the next engine...", engine, e)
 
-        async for chunk in self.gemini.generate_response_stream_async(
-            prompt=prompt,
-            system_instruction=system_instruction,
-            attachments=attachments,
-            temperature=temperature,
-        ):
-            yield chunk
+        gemini_yielded = False
+        try:
+            async for chunk in self.gemini.generate_response_stream_async(
+                prompt=prompt,
+                system_instruction=system_instruction,
+                attachments=attachments,
+                temperature=temperature,
+            ):
+                gemini_yielded = True
+                yield chunk
+            return
+        except Exception as e:
+            logger.warning("Gemini stream failed (%s).", e)
+            if gemini_yielded:
+                return
+            if not attachments and self.groq and "light" not in engines_tried:
+                logger.info("Attempting fallback to light Groq stream after Gemini failure...")
+                async for chunk in self.groq.generate_response_stream_async(
+                    prompt, system_instruction, temperature, models=self.light_models
+                ):
+                    yield chunk
+                return
+            raise

@@ -55,7 +55,8 @@ class Settings(BaseSettings):
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
     # "deepseek-chat" was deprecated in the official API; "deepseek-reasoner" adds reasoning.
     DEEPSEEK_MODEL: str = "deepseek-flash"
-    DEEPSEEK_MAX_OUTPUT_TOKENS: int = 4096
+    DEEPSEEK_MAX_OUTPUT_TOKENS: int = 8192
+    DEEPSEEK_REASONING_EFFORT: str = "low"
 
     # 3c. Query router (Level 1) and execution routing (Level 3)
     # Estimated token threshold above which a "simple" query leaves Groq

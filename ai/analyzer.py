@@ -595,7 +595,7 @@ Responde de forma concisa y directa en 1 a 3 oraciones completas en TEXTO PLANO 
             )
             return clean_markdown_to_plain_text(raw_response)
         except Exception as e:
-            logger.error("Error suggesting progression with Gemini: %s", e)
+            logger.error("Error suggesting progression with AI engine: %s", e)
             return f"❌ Error al consultar la sugerencia de progresión: {e}"
 
     def generate_weekly_summary(self) -> str:
@@ -632,5 +632,5 @@ Estructura la respuesta de manera clara, concisa y profesional en TEXTO PLANO (p
             )
             return clean_markdown_to_plain_text(raw_response)
         except Exception as e:
-            logger.error("Error generating weekly summary with Gemini: %s", e)
+            logger.error("Error generating weekly summary with AI engine: %s", e)
             return f"❌ Error al generar resumen semanal: {e}"

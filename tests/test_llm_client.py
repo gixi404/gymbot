@@ -115,6 +115,66 @@ class TestLLMFallbackOnEmptyReasoning(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(resp, "Respuesta desde Gemini.")
 
+    @patch("ai.llm_client.GeminiClient")
+    @patch("ai.llm_client.DeepSeekClient")
+    @patch("ai.llm_client.GroqClient")
+    def test_sync_fallback_to_groq_when_gemini_fails(self, mock_groq_cls, mock_deepseek_cls, mock_gemini_cls):
+        mock_gemini = mock_gemini_cls.return_value
+        mock_deepseek = mock_deepseek_cls.return_value
+        mock_groq = mock_groq_cls.return_value
+
+        mock_deepseek.generate_response.side_effect = RuntimeError("DeepSeek failed")
+        mock_gemini.generate_response.side_effect = RuntimeError("Gemini 401 UNAUTHENTICATED")
+        mock_groq.generate_response.return_value = "Respuesta recuperada por Groq."
+
+        client = LLMClient(settings=self.settings)
+        route = QueryRoute(complexity="complex", groups=["PesoCorporal"], days_lookback=7)
+
+        resp = client.generate_response(
+            prompt="resumen",
+            system_instruction="inst",
+            route=route,
+        )
+        self.assertEqual(resp, "Respuesta recuperada por Groq.")
+
+    @patch("ai.llm_client.GeminiClient")
+    @patch("ai.llm_client.DeepSeekClient")
+    @patch("ai.llm_client.GroqClient")
+    async def test_streaming_fallback_to_groq_when_gemini_fails(
+        self, mock_groq_cls, mock_deepseek_cls, mock_gemini_cls
+    ):
+        mock_gemini = mock_gemini_cls.return_value
+        mock_deepseek = mock_deepseek_cls.return_value
+        mock_groq = mock_groq_cls.return_value
+
+        async def mock_deepseek_stream(*args, **kwargs):
+            raise RuntimeError("DeepSeek failed")
+            yield "never"
+
+        async def mock_gemini_stream(*args, **kwargs):
+            raise RuntimeError("Gemini 401 UNAUTHENTICATED")
+            yield "never"
+
+        async def mock_groq_stream(*args, **kwargs):
+            yield "Respuesta Groq en streaming"
+
+        mock_deepseek.generate_response_stream_async = mock_deepseek_stream
+        mock_gemini.generate_response_stream_async = mock_gemini_stream
+        mock_groq.generate_response_stream_async = mock_groq_stream
+
+        client = LLMClient(settings=self.settings)
+        route = QueryRoute(complexity="complex", groups=["PesoCorporal"], days_lookback=7)
+
+        chunks = []
+        async for chunk in client.generate_response_stream_async(
+            prompt="resumen",
+            system_instruction="inst",
+            route=route,
+        ):
+            chunks.append(chunk)
+
+        self.assertEqual("".join(chunks), "Respuesta Groq en streaming")
+
 
 class TestDirectivesAndInstructions(unittest.TestCase):
     def test_system_instruction_forbids_generic_refusals(self):
