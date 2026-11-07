@@ -7,7 +7,8 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+import httpx
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
@@ -58,6 +59,57 @@ async def _send_typing_action(chat, interval: float = 4.0):
             await task
         except (asyncio.CancelledError, GeneratorExit):
             pass
+
+
+async def _download_telegram_file(
+    bot: Bot,
+    file_id: str,
+    max_retries: int = 3,
+    read_timeout: float = 60.0,
+    connect_timeout: float = 30.0,
+) -> bytes:
+    """Downloads a file from Telegram with retries, generous timeouts, and fallback to direct httpx."""
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            file_obj = await bot.get_file(file_id, read_timeout=read_timeout, connect_timeout=connect_timeout)
+
+            # 1. Primary download attempt via python-telegram-bot
+            try:
+                data = await file_obj.download_as_bytearray(read_timeout=read_timeout, connect_timeout=connect_timeout)
+                if data:
+                    return bytes(data)
+            except Exception as dl_err:
+                logger.warning(
+                    "download_as_bytearray failed on attempt %d/%d (%s). Trying direct httpx...",
+                    attempt,
+                    max_retries,
+                    dl_err,
+                )
+                # 2. Fallback to direct download via httpx
+                if file_obj.file_path:
+                    async with httpx.AsyncClient(
+                        timeout=httpx.Timeout(connect=connect_timeout, read=read_timeout, write=30.0, pool=10.0)
+                    ) as client:
+                        resp = await client.get(file_obj.file_path)
+                        resp.raise_for_status()
+                        if resp.content:
+                            return resp.content
+                raise dl_err
+        except Exception as err:
+            last_error = err
+            logger.warning(
+                "Failed to download Telegram file '%s' on attempt %d/%d: %s",
+                file_id,
+                attempt,
+                max_retries,
+                err,
+            )
+            if attempt < max_retries:
+                await asyncio.sleep(1.0 * attempt)
+
+    raise last_error or RuntimeError(f"Could not download file {file_id}")
 
 
 def _split_long_message(text: str, max_length: int = TELEGRAM_MESSAGE_MAX_LENGTH) -> list[str]:
@@ -754,9 +806,7 @@ class GymTelegramBot:
 
         async with _send_typing_action(message.chat):
             try:
-                file_obj = await context.bot.get_file(voice_or_audio.file_id)
-                audio_bytearray = await file_obj.download_as_bytearray()
-                audio_bytes = bytes(audio_bytearray)
+                audio_bytes = await _download_telegram_file(context.bot, voice_or_audio.file_id)
             except Exception as e:
                 logger.error("Error downloading audio file: %s", e)
                 await self._safe_edit(
@@ -857,9 +907,7 @@ class GymTelegramBot:
         async with _send_typing_action(message.chat):
             await self._sync_before_query()
             try:
-                file_obj = await context.bot.get_file(photo_obj.file_id)
-                img_bytearray = await file_obj.download_as_bytearray()
-                img_bytes = bytes(img_bytearray)
+                img_bytes = await _download_telegram_file(context.bot, photo_obj.file_id)
             except Exception as e:
                 logger.error("Error downloading photo from Telegram: %s", e)
                 await self._safe_edit(
@@ -926,9 +974,7 @@ class GymTelegramBot:
                 mime_type = guessed or "application/octet-stream"
 
             try:
-                file_obj = await context.bot.get_file(doc.file_id)
-                doc_bytearray = await file_obj.download_as_bytearray()
-                doc_bytes = bytes(doc_bytearray)
+                doc_bytes = await _download_telegram_file(context.bot, doc.file_id)
             except Exception as e:
                 logger.error("Error downloading document from Telegram: %s", e)
                 await self._safe_edit(
@@ -993,10 +1039,12 @@ class GymTelegramBot:
     def build_application(self) -> Application:
         """Builds and configures the python-telegram-bot application."""
         request = HTTPXRequest(
-            connection_pool_size=8,
-            connect_timeout=20.0,
-            read_timeout=30.0,
-            write_timeout=20.0,
+            connection_pool_size=16,
+            connect_timeout=30.0,
+            read_timeout=60.0,
+            write_timeout=30.0,
+            pool_timeout=10.0,
+            media_write_timeout=120.0,
         )
         app = (
             ApplicationBuilder()

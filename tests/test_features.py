@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from ai.analyzer import GymAnalyzer
 from storage.database import GymDatabase
@@ -94,6 +94,53 @@ class TestFeatures(unittest.TestCase):
         res_week = analyzer.generate_weekly_summary()
         self.assertEqual(res_week, "Respuesta simulada exitosa")
         mock_gemini.generate_response.assert_called()
+
+
+class TestTelegramDownloadFile(unittest.IsolatedAsyncioTestCase):
+    async def test_download_success_primary(self):
+        from telegram_service.bot_service import _download_telegram_file
+
+        mock_bot = MagicMock()
+        mock_file = MagicMock()
+        mock_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"audio-data"))
+        mock_bot.get_file = AsyncMock(return_value=mock_file)
+
+        result = await _download_telegram_file(mock_bot, "file-123")
+        self.assertEqual(result, b"audio-data")
+        mock_bot.get_file.assert_called_once()
+        mock_file.download_as_bytearray.assert_called_once()
+
+    @patch("httpx.AsyncClient")
+    async def test_download_fallback_to_httpx_on_error(self, mock_client_cls):
+        from telegram_service.bot_service import _download_telegram_file
+
+        mock_bot = MagicMock()
+        mock_file = MagicMock()
+        mock_file.file_path = "https://api.telegram.org/file/botTOKEN/voice.oga"
+        mock_file.download_as_bytearray = AsyncMock(side_effect=TimeoutError("Timed out"))
+        mock_bot.get_file = AsyncMock(return_value=mock_file)
+
+        mock_resp = MagicMock()
+        mock_resp.content = b"httpx-downloaded-audio"
+        mock_resp.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+        result = await _download_telegram_file(mock_bot, "file-123", max_retries=1)
+        self.assertEqual(result, b"httpx-downloaded-audio")
+        mock_client.get.assert_called_once_with(mock_file.file_path)
+
+    async def test_download_all_retries_fail(self):
+        from telegram_service.bot_service import _download_telegram_file
+
+        mock_bot = MagicMock()
+        mock_bot.get_file = AsyncMock(side_effect=TimeoutError("Get file timed out"))
+
+        with self.assertRaises(TimeoutError):
+            await _download_telegram_file(mock_bot, "file-123", max_retries=2)
+        self.assertEqual(mock_bot.get_file.call_count, 2)
 
 
 if __name__ == "__main__":
